@@ -1,0 +1,12 @@
+# Conda Environment Required with
+pandas
+matplotlib
+tensorflow
+imageio
+imageio-ffmpeg
+opencv-python
+rpyc
+
+#GPU
+cudatoolkit
+cudnn
