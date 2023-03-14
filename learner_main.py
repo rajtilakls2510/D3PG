@@ -16,3 +16,7 @@ if __name__ == "__main__":
     learner_coord = learner.LearnerCoordinator(network_creators, config)
     learner_coord.start()
     print("Learner System Started")
+
+    # You gotta keep working for signals to be received
+    while True:
+        pass

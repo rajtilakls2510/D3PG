@@ -7,6 +7,8 @@ from tensorflow.keras.models import clone_model, load_model
 import replaybuffer
 import rpyc
 from rpyc.utils.helpers import classpartial
+from signal import signal, SIGINT, SIGTERM
+
 
 # ======================= Learner Main Process =========================================
 
@@ -14,7 +16,7 @@ from rpyc.utils.helpers import classpartial
 class LearnerCoordinator:
     # Main Learner process is started with the object of this class to start the learner system
     def __init__(self, network_creators, config):
-        self.reference_holders = {"algo_process": None, "accum_process": None, "param_process": None, "actor_coords": []}
+        self.reference_holders = {"algo_process": None, "accum_process": None, "param_process": None}
         self.connection_holders = {"algo": None, "accum": None, "param": None, "actor_coords": []}
         self.lcs_server = None
         self.config = config
@@ -22,40 +24,67 @@ class LearnerCoordinator:
         self.config["actor_coords"] = []
         self.config["start_request_sent"] = False
 
+    def process_terminator(self, signum, frame):
+        print("Terminating Learner and Actor systems")
+        self.lcs_server.close()
+        for actor_conn in self.connection_holders["actor_coords"]:
+            try:
+                actor_conn.root.stop()
+            except:
+                pass
+        self.connection_holders["algo"].close()
+        self.connection_holders["accum"].close()
+        self.connection_holders["param"].close()
+        self.reference_holders["algo_process"].terminate()
+        self.reference_holders["accum_process"].terminate()
+        self.reference_holders["param_process"].terminate()
+        self.reference_holders["algo_process"].join()
+        self.reference_holders["accum_process"].join()
+        self.reference_holders["param_process"].join()
+        exit(0)
+
     def start_lcs_server(self):
         print("Starting Learner Coordinator Server...")
         self.lcs_server.start()
 
     def start(self):
-        events = {"algo": threading.Event(), "accum": threading.Event(), "param": threading.Event(), "actors": threading.Event()}
+        events = {"algo": threading.Event(), "accum": threading.Event(), "param": threading.Event(),
+                  "actors": threading.Event()}
+
+        signal(SIGINT, self.process_terminator)
+        signal(SIGTERM, self.process_terminator)
 
         # Starting LCS Server on a different thread
-        lcs = classpartial(LearnerCoordinatorService, events, self.reference_holders, self.config, self.connection_holders)
+        lcs = classpartial(LearnerCoordinatorService, events, self.reference_holders, self.config,
+                           self.connection_holders)
         self.lcs_server = ThreadedServer(lcs, port=self.config["lcs_server_port"])
         t1 = threading.Thread(target=self.start_lcs_server)
         t1.start()
 
         # Starting Algorithm Process
         print("Starting Algorithm Process")
-        self.reference_holders["algo_process"] = multiprocessing.Process(target=DDPGLearner.process_starter, args=(self.network_creators, self.config))
+        self.reference_holders["algo_process"] = multiprocessing.Process(target=DDPGLearner.process_starter,
+                                                                         args=(self.network_creators, self.config))
         self.reference_holders["algo_process"].start()
 
         # Starting Data Accumulator Process
         print("Starting Data Accumulator Process")
-        self.reference_holders["accum_process"] = multiprocessing.Process(target=Pusher.process_starter, args=(self.config,))
+        self.reference_holders["accum_process"] = multiprocessing.Process(target=Pusher.process_starter,
+                                                                          args=(self.config,))
         self.reference_holders["accum_process"].start()
 
         # Starting Parameter Server Process
         print("Starting Parameter Server Process")
-        self.reference_holders["param_process"] = multiprocessing.Process(target=ParameterMain.process_starter, args=(self.config,))
+        self.reference_holders["param_process"] = multiprocessing.Process(target=ParameterMain.process_starter,
+                                                                          args=(self.config,))
         self.reference_holders["param_process"].start()
 
         # Await confirmation from 4 workers
         events["algo"].wait()
         events["accum"].wait()
         events["param"].wait()
-        print("Waiting for one Actor Coordinator to join")
-        events["actors"].wait()
+        # print("Waiting for one Actor Coordinator to join")
+        # events["actors"].wait()
 
         # Connecting to all workers
         self.connection_holders["algo"] = rpyc.connect("localhost", port=self.config["algo_server_port"])
@@ -87,8 +116,7 @@ class LearnerCoordinatorService(rpyc.Service):
         self.connection_holders = connection_holders
 
     @rpyc.exposed
-    def component_started_confirmation(self, signature, info = None):
-        self.events[signature].set()
+    def component_started_confirmation(self, signature, info=None):
         if signature == "actors":
             self.config["actor_coords"].append(info)
             conn = rpyc.connect(info['host'], port=info['port'])
@@ -96,6 +124,8 @@ class LearnerCoordinatorService(rpyc.Service):
             if self.config["start_request_sent"]:
                 conn.root.start_work()
             print(f"Actor connected with host: {info['host']} port:{info['port']}")
+        else:
+            self.events[signature].set()
 
 
 # ======================= Algorithm Process =========================================
@@ -142,7 +172,6 @@ class DDPGLearner:
         self.step_counter = 1
         self.critic_loss = tf.keras.losses.MeanSquaredError()
 
-
     @classmethod
     def start_as_server(cls, as_server):
         print("Starting Algorithm Server")
@@ -151,6 +180,9 @@ class DDPGLearner:
     @classmethod
     def process_starter(cls, network_creators, config):
         print(f"Algorithm Process Started: {os.getpid()}")
+
+        signal(SIGINT, DDPGLearner.process_terminator)
+        signal(SIGTERM, DDPGLearner.process_terminator)
 
         # Starting Algorithm Server
         start_event = threading.Event()
@@ -172,9 +204,10 @@ class DDPGLearner:
 
     @classmethod
     def process_terminator(cls):
-        # Signal Handler for the SIGTERM or SIGINT for this process
-        pass
-
+        DDPGLearner.ddpg_learner_object.close()
+        DDPGLearner.as_server.close()
+        DDPGLearner.lc_connection.close()
+        exit(0)
 
     def train(self):
         # TODO: Write training logic
@@ -226,6 +259,10 @@ class DDPGLearner:
                 self.critic_target_network = clone_model(self.critic_network)
         self.replay_buffer.load(os.path.join(path, "replay"))
 
+    def close(self):
+        # Release any resources here
+        pass
+
 
 # ======================= Parameter Server Process =========================================
 
@@ -254,6 +291,9 @@ class ParameterMain:
     def process_starter(cls, config):
         print(f"Parameter Server Process Started: {os.getpid()}")
 
+        signal(SIGINT, ParameterMain.process_terminator)
+        signal(SIGTERM, ParameterMain.process_terminator)
+
         # Starting Parameter Server
         start_event = threading.Event()
         ps_service = classpartial(ParameterService, start_event)
@@ -273,7 +313,13 @@ class ParameterMain:
 
     @classmethod
     def process_terminator(cls):
-        # Signal Handler for the SIGTERM or SIGINT for this process
+        ParameterMain.parameter_main_object.close()
+        ParameterMain.ps_server.close()
+        ParameterMain.lc_connection.close()
+        exit(0)
+
+    def close(self):
+        # Release any resources here
         pass
 
 
@@ -305,6 +351,9 @@ class Pusher:
     def process_starter(cls, config):
         print(f"Data Accumulator Process Started: {os.getpid()}")
 
+        signal(SIGINT, Pusher.process_terminator)
+        signal(SIGTERM, Pusher.process_terminator)
+
         # Starting Data Accumulator Server
         start_event = threading.Event()
         das_service = classpartial(DataAccumulatorService, start_event)
@@ -313,7 +362,7 @@ class Pusher:
         t1.start()
 
         # Sending confirmation to LC about successful process start
-        Pusher.lc_connection = rpyc.connect("localhost", port = config["lcs_server_port"])
+        Pusher.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
         Pusher.lc_connection.root.component_started_confirmation("accum")
         Pusher.pusher_object = Pusher()
 
@@ -321,13 +370,19 @@ class Pusher:
         start_event.wait()
 
         # After confirmation from LC, start pusher
-        Pusher.pusher_object.start() # TODO: Add pusher logic
+        Pusher.pusher_object.start()  # TODO: Add pusher logic
 
     @classmethod
     def process_terminator(cls):
-        # Signal Handler for the SIGTERM or SIGINT for this process
-        pass
+        Pusher.pusher_object.close()
+        Pusher.das_server.close()
+        Pusher.lc_connection.close()
+        exit(0)
 
     def start(self):
         # Start thread-safe queue and that fun stuff
+        pass
+
+    def close(self):
+        # Release any resources here
         pass

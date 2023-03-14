@@ -1,5 +1,4 @@
 import actor
-import environment
 
 
 def env_creator():
@@ -15,3 +14,6 @@ if __name__ == "__main__":
     actor_coord = actor.ActorCoordinator(env_creator, config)
     actor_coord.start()
     print("Actor System Started")
+    # You gotta keep working for signals to be received
+    while True:
+        pass
