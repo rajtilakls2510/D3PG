@@ -13,11 +13,12 @@ from rpyc.utils.helpers import classpartial
 
 class LearnerCoordinator:
     # Main Learner process is started with the object of this class to start the learner system
-    def __init__(self, config):
+    def __init__(self, network_creators, config):
         self.reference_holders = {"algo_process": None, "accum_process": None, "param_process": None, "actor_coords": []}
         self.connection_holders = {"algo": None, "accum": None, "param": None, "actor_coords": []}
         self.lcs_server = None
         self.config = config
+        self.network_creators = network_creators
         self.config["actor_coords"] = []
         self.config["start_request_sent"] = False
 
@@ -36,7 +37,7 @@ class LearnerCoordinator:
 
         # Starting Algorithm Process
         print("Starting Algorithm Process")
-        self.reference_holders["algo_process"] = multiprocessing.Process(target=DDPGLearner.process_starter, args=(self.config,))
+        self.reference_holders["algo_process"] = multiprocessing.Process(target=DDPGLearner.process_starter, args=(self.network_creators, self.config))
         self.reference_holders["algo_process"].start()
 
         # Starting Data Accumulator Process
@@ -111,13 +112,15 @@ class AlgorithmService(rpyc.Service):
 
 
 class DDPGLearner:
+    as_server = None
+    lc_connection = None
+    ddpg_learner_object = None
 
-    def __init__(self, actor_network: tf.keras.Model = None, critic_network: tf.keras.Model = None, learn_after_steps=1,
+    def __init__(self, network_creators, learn_after_steps=1,
                  replay_size=1000, exploration=0.1, min_exploration=0.0, exploration_decay=1.1,
-                 exploration_decay_after=100, discount_factor=0.9, tau=0.001, as_server = None, lc_connection = None):
+                 exploration_decay_after=100, discount_factor=0.9, tau=0.001):
         super().__init__()
-        self.actor_network = actor_network
-        self.critic_network = critic_network
+        self.actor_network, self.critic_network = network_creators()
         if self.actor_network is None:
             self.actor_target_network = None
         else:
@@ -138,8 +141,7 @@ class DDPGLearner:
         self.tau = tf.convert_to_tensor(tau)
         self.step_counter = 1
         self.critic_loss = tf.keras.losses.MeanSquaredError()
-        self.as_server = as_server
-        self.lc_connection = lc_connection
+
 
     @classmethod
     def start_as_server(cls, as_server):
@@ -147,24 +149,32 @@ class DDPGLearner:
         as_server.start()
 
     @classmethod
-    def process_starter(cls, config):
+    def process_starter(cls, network_creators, config):
         print(f"Algorithm Process Started: {os.getpid()}")
 
         # Starting Algorithm Server
         start_event = threading.Event()
         as_service = classpartial(AlgorithmService, start_event)
-        as_server = ThreadedServer(as_service, port=config["algo_server_port"])
-        t1 = threading.Thread(target=DDPGLearner.start_as_server, args=[as_server])
+        DDPGLearner.as_server = ThreadedServer(as_service, port=config["algo_server_port"])
+        t1 = threading.Thread(target=DDPGLearner.start_as_server, args=[DDPGLearner.as_server])
         t1.start()
 
         # Sending confirmation to LC about successful process start
-        lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
-        lc_connection.root.component_started_confirmation("algo")
-        learner = DDPGLearner(as_server=as_server, lc_connection=lc_connection)
+        DDPGLearner.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
+        DDPGLearner.lc_connection.root.component_started_confirmation("algo")
+        DDPGLearner.ddpg_learner_object = DDPGLearner(network_creators)
 
         # Waiting for start confirmation from LC
         start_event.wait()
-        learner.train()
+
+        # After confirmation from LC, start training
+        DDPGLearner.ddpg_learner_object.train()
+
+    @classmethod
+    def process_terminator(cls):
+        # Signal Handler for the SIGTERM or SIGINT for this process
+        pass
+
 
     def train(self):
         # TODO: Write training logic
@@ -231,10 +241,9 @@ class ParameterService(rpyc.Service):
 
 
 class ParameterMain:
-
-    def __init__(self, ps_server, lc_connection=None):
-        self.ps_server = ps_server
-        self.lc_connection=lc_connection
+    ps_server = None
+    lc_connection = None
+    parameter_main_object = None
 
     @classmethod
     def start_ps_server(cls, ps_server):
@@ -248,18 +257,25 @@ class ParameterMain:
         # Starting Parameter Server
         start_event = threading.Event()
         ps_service = classpartial(ParameterService, start_event)
-        ps_server = ThreadedServer(ps_service, port=config["param_server_port"])
-        t1 = threading.Thread(target=ParameterMain.start_ps_server, args=[ps_server])
+        ParameterMain.ps_server = ThreadedServer(ps_service, port=config["param_server_port"])
+        t1 = threading.Thread(target=ParameterMain.start_ps_server, args=[ParameterMain.ps_server])
         t1.start()
 
         # Sending confirmation to LC about successful process start
-        lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
-        lc_connection.root.component_started_confirmation("param")
-        main = ParameterMain(ps_server=ps_server, lc_connection=lc_connection)
+        ParameterMain.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
+        ParameterMain.lc_connection.root.component_started_confirmation("param")
+        ParameterMain.parameter_main_object = ParameterMain()
+        # Not sure what to do with the object but still keeping it for potential future use
 
         # Waiting for start confirmation from LC
         start_event.wait()
         t1.join()
+
+    @classmethod
+    def process_terminator(cls):
+        # Signal Handler for the SIGTERM or SIGINT for this process
+        pass
+
 
 # ======================= Data Accumulator Process =========================================
 
@@ -276,10 +292,9 @@ class DataAccumulatorService(rpyc.Service):
 
 class Pusher:
     # Pushes the data in the queue into algorithm process
-
-    def __init__(self, das_server, lc_connection=None):
-        self.das_server = das_server
-        self.lc_connection = lc_connection
+    das_server = None
+    lc_connection = None
+    pusher_object = None
 
     @classmethod
     def start_das_server(cls, das_server):
@@ -293,18 +308,25 @@ class Pusher:
         # Starting Data Accumulator Server
         start_event = threading.Event()
         das_service = classpartial(DataAccumulatorService, start_event)
-        das_server = ThreadedServer(das_service, port=config["accum_server_port"])
-        t1 = threading.Thread(target=Pusher.start_das_server, args=[das_server])
+        Pusher.das_server = ThreadedServer(das_service, port=config["accum_server_port"])
+        t1 = threading.Thread(target=Pusher.start_das_server, args=[Pusher.das_server])
         t1.start()
 
         # Sending confirmation to LC about successful process start
-        lc_connection = rpyc.connect("localhost", port = config["lcs_server_port"])
-        lc_connection.root.component_started_confirmation("accum")
-        pusher = Pusher(das_server=das_server, lc_connection=lc_connection)
+        Pusher.lc_connection = rpyc.connect("localhost", port = config["lcs_server_port"])
+        Pusher.lc_connection.root.component_started_confirmation("accum")
+        Pusher.pusher_object = Pusher()
 
         # Waiting for start confirmation from LC
         start_event.wait()
-        pusher.start() # TODO: Add pusher logic
+
+        # After confirmation from LC, start pusher
+        Pusher.pusher_object.start() # TODO: Add pusher logic
+
+    @classmethod
+    def process_terminator(cls):
+        # Signal Handler for the SIGTERM or SIGINT for this process
+        pass
 
     def start(self):
         # Start thread-safe queue and that fun stuff

@@ -1,5 +1,10 @@
 import learner
 
+
+def network_creators():
+    return None, None
+
+
 config = {
     "lcs_server_port": 18861,
     "algo_server_port": 18862,
@@ -8,6 +13,6 @@ config = {
 }
 
 if __name__ == "__main__":
-    learner_coord = learner.LearnerCoordinator(config)
+    learner_coord = learner.LearnerCoordinator(network_creators, config)
     learner_coord.start()
     print("Learner System Started")
