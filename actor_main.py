@@ -8,6 +8,7 @@ config = {
     "num_actors": 5,
     "lcs_server_host": "localhost",
     "lcs_server_port": 18861,
+    "acs_server_host": "localhost",
     "acs_server_port": 18865
 }
 if __name__ == "__main__":

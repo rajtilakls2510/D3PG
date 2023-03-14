@@ -2,10 +2,10 @@ import threading
 import rpyc
 import tensorflow as tf
 from rpyc.utils.helpers import classpartial
-import socket
 import multiprocessing
 import os
 from signal import signal, SIGINT, SIGTERM
+
 
 class DDPGActor:
     ac_connection = None
@@ -86,7 +86,7 @@ class ActorCoordinatorService(rpyc.Service):
 
     @rpyc.exposed
     def stop(self):
-        ActorCoordinator.process_terminator(None, None)
+        os.kill(os.getpid(), SIGTERM)
 
 
 class ActorCoordinator:
@@ -118,7 +118,7 @@ class ActorCoordinator:
 
         # Sending Confirmation to LC about successful process start
         ActorCoordinator.lc_connection = rpyc.connect(self.config["lcs_server_host"], port=self.config["lcs_server_port"])
-        ActorCoordinator.lc_connection.root.component_started_confirmation("actors", info={"host": socket.gethostbyname(socket.gethostname()), "port": self.config["acs_server_port"]})
+        ActorCoordinator.lc_connection.root.component_started_confirmation("actors", info={"host": self.config["acs_server_host"], "port": self.config["acs_server_port"]})
 
         # Waiting for start confirmation from LC
         start_event.wait()
@@ -139,14 +139,13 @@ class ActorCoordinator:
     @classmethod
     def process_terminator(cls, signum, frame):
         print("Terminating Actor System")
-        ActorCoordinator.acs_server.close()
+
         ActorCoordinator.lc_connection.close()
-        for conn in ActorCoordinator.connection_holders["actors"]:
-            conn.close()
 
         for actor_process in ActorCoordinator.reference_holders["actor_processes"]:
             actor_process.terminate()
 
         for actor_process in ActorCoordinator.reference_holders["actor_processes"]:
             actor_process.join()
+        ActorCoordinator.acs_server.close()
         exit(0)
