@@ -203,7 +203,7 @@ class DDPGLearner:
         DDPGLearner.ddpg_learner_object.train()
 
     @classmethod
-    def process_terminator(cls):
+    def process_terminator(cls, signum, frame):
         DDPGLearner.ddpg_learner_object.close()
         DDPGLearner.as_server.close()
         DDPGLearner.lc_connection.close()
@@ -312,7 +312,7 @@ class ParameterMain:
         t1.join()
 
     @classmethod
-    def process_terminator(cls):
+    def process_terminator(cls, signum, frame):
         ParameterMain.parameter_main_object.close()
         ParameterMain.ps_server.close()
         ParameterMain.lc_connection.close()
@@ -373,7 +373,7 @@ class Pusher:
         Pusher.pusher_object.start()  # TODO: Add pusher logic
 
     @classmethod
-    def process_terminator(cls):
+    def process_terminator(cls, signum, frame):
         Pusher.pusher_object.close()
         Pusher.das_server.close()
         Pusher.lc_connection.close()
