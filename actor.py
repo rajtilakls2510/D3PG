@@ -30,9 +30,9 @@ class DDPGActor:
 
     @classmethod
     def process_terminator(cls, signum, frame):
-        DDPGActor.bgsrv.stop()
         DDPGActor.ddpg_actor_object.close()
         DDPGActor.ac_connection.close()
+        DDPGActor.bgsrv.stop()
         exit(0)
 
     def act(self):
@@ -140,12 +140,13 @@ class ActorCoordinator:
     def process_terminator(cls, signum, frame):
         print("Terminating Actor System")
 
-        ActorCoordinator.lc_connection.close()
 
         for actor_process in ActorCoordinator.reference_holders["actor_processes"]:
             actor_process.terminate()
 
         for actor_process in ActorCoordinator.reference_holders["actor_processes"]:
             actor_process.join()
+
+        ActorCoordinator.lc_connection.close()
         ActorCoordinator.acs_server.close()
         exit(0)

@@ -26,7 +26,7 @@ class LearnerCoordinator:
 
     def process_terminator(self, signum, frame):
         print("Terminating Learner and Actor systems")
-        self.lcs_server.close()
+
         for actor_conn in self.connection_holders["actor_coords"]:
             try:
                 actor_conn.root.stop()
@@ -41,6 +41,7 @@ class LearnerCoordinator:
         self.reference_holders["algo_process"].join()
         self.reference_holders["accum_process"].join()
         self.reference_holders["param_process"].join()
+        self.lcs_server.close()
         exit(0)
 
     def start_lcs_server(self):
@@ -205,8 +206,8 @@ class DDPGLearner:
     @classmethod
     def process_terminator(cls, signum, frame):
         DDPGLearner.ddpg_learner_object.close()
-        DDPGLearner.as_server.close()
         DDPGLearner.lc_connection.close()
+        DDPGLearner.as_server.close()
         exit(0)
 
     def train(self):
@@ -314,8 +315,8 @@ class ParameterMain:
     @classmethod
     def process_terminator(cls, signum, frame):
         ParameterMain.parameter_main_object.close()
-        ParameterMain.ps_server.close()
         ParameterMain.lc_connection.close()
+        ParameterMain.ps_server.close()
         exit(0)
 
     def close(self):
@@ -375,8 +376,8 @@ class Pusher:
     @classmethod
     def process_terminator(cls, signum, frame):
         Pusher.pusher_object.close()
-        Pusher.das_server.close()
         Pusher.lc_connection.close()
+        Pusher.das_server.close()
         exit(0)
 
     def start(self):
