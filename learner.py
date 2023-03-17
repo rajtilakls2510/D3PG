@@ -1,13 +1,13 @@
 import multiprocessing
 import os
-import tensorflow as tf
+import json
 import threading
+from signal import signal, SIGINT, SIGTERM
+import rpyc
+import tensorflow as tf
+from rpyc.utils.helpers import classpartial
 from rpyc.utils.server import ThreadedServer
 from tensorflow.keras.models import clone_model, load_model
-import replaybuffer
-import rpyc
-from rpyc.utils.helpers import classpartial
-from signal import signal, SIGINT, SIGTERM
 
 
 # ======================= Learner Main Process =========================================
@@ -15,12 +15,12 @@ from signal import signal, SIGINT, SIGTERM
 
 class LearnerCoordinator:
     # Main Learner process is started with the object of this class to start the learner system
-    def __init__(self, network_creators, config):
+    def __init__(self, learner_parameters, config):
         self.reference_holders = {"algo_process": None, "accum_process": None, "param_process": None}
         self.connection_holders = {"algo": None, "accum": None, "param": None, "actor_coords": []}
         self.lcs_server = None
         self.config = config
-        self.network_creators = network_creators
+        self.learner_parameters = learner_parameters
         self.config["actor_coords"] = []
         self.config["start_request_sent"] = False
 
@@ -65,19 +65,22 @@ class LearnerCoordinator:
         # Starting Algorithm Process
         print("Starting Algorithm Process")
         self.reference_holders["algo_process"] = multiprocessing.Process(target=DDPGLearner.process_starter,
-                                                                         args=(self.network_creators, self.config))
+                                                                         args=(self.learner_parameters, self.config),
+                                                                         name='Algorithm')
         self.reference_holders["algo_process"].start()
 
         # Starting Data Accumulator Process
         print("Starting Data Accumulator Process")
         self.reference_holders["accum_process"] = multiprocessing.Process(target=Pusher.process_starter,
-                                                                          args=(self.config,))
+                                                                          args=(self.config,),
+                                                                          name='DataAccumulator')
         self.reference_holders["accum_process"].start()
 
         # Starting Parameter Server Process
         print("Starting Parameter Server Process")
         self.reference_holders["param_process"] = multiprocessing.Process(target=ParameterMain.process_starter,
-                                                                          args=(self.config,))
+                                                                          args=(self.config,),
+                                                                          name='ParameterServer')
         self.reference_holders["param_process"].start()
 
         # Await confirmation from 4 workers
@@ -147,11 +150,10 @@ class DDPGLearner:
     lc_connection = None
     ddpg_learner_object = None
 
-    def __init__(self, network_creators, learn_after_steps=1,
-                 replay_size=1000, exploration=0.1, min_exploration=0.0, exploration_decay=1.1,
-                 exploration_decay_after=100, discount_factor=0.9, tau=0.001):
-        super().__init__()
-        self.actor_network, self.critic_network = network_creators()
+    def __init__(self, learner_parameters):
+        self.step_counter = 1
+        self.agent_path = learner_parameters["agent_path"]
+        self.actor_network, self.critic_network = learner_parameters["network_creator"]()
         if self.actor_network is None:
             self.actor_target_network = None
         else:
@@ -161,17 +163,12 @@ class DDPGLearner:
             self.critic_target_network = None
         else:
             self.critic_target_network = clone_model(self.critic_network)
-
-        self.learn_after_steps = learn_after_steps
-        self.replay_buffer = replaybuffer.UniformReplay(replay_size, continuous=True)
-        self.discount_factor = tf.convert_to_tensor(discount_factor)
-        self.exploration = exploration
-        self.min_exploration = min_exploration
-        self.exploration_decay = exploration_decay
-        self.exploration_decay_after = exploration_decay_after
-        self.tau = tf.convert_to_tensor(tau)
-        self.step_counter = 1
-        self.critic_loss = tf.keras.losses.MeanSquaredError()
+        print(self.actor_network.get_weights())
+        self.min_replay_transitions = learner_parameters["min_replay_transitions"]
+        self.replay_buffer = learner_parameters["replay_buffer"](learner_parameters["replay_buffer_size"], continuous_actions=True)
+        self.discount_factor = tf.convert_to_tensor(learner_parameters["discount_factor"])
+        self.tau = tf.convert_to_tensor(learner_parameters["tau"])
+        self.critic_loss = learner_parameters["critic_loss"]()
 
     @classmethod
     def start_as_server(cls, as_server):
@@ -179,7 +176,7 @@ class DDPGLearner:
         as_server.start()
 
     @classmethod
-    def process_starter(cls, network_creators, config):
+    def process_starter(cls, learner_parameters, config):
         print(f"Algorithm Process Started: {os.getpid()}")
 
         signal(SIGINT, DDPGLearner.process_terminator)
@@ -195,13 +192,13 @@ class DDPGLearner:
         # Sending confirmation to LC about successful process start
         DDPGLearner.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
         DDPGLearner.lc_connection.root.component_started_confirmation("algo")
-        DDPGLearner.ddpg_learner_object = DDPGLearner(network_creators)
+        DDPGLearner.ddpg_learner_object = DDPGLearner(learner_parameters)
 
         # Waiting for start confirmation from LC
         start_event.wait()
 
         # After confirmation from LC, start training
-        DDPGLearner.ddpg_learner_object.train()
+        DDPGLearner.ddpg_learner_object.train(config)
 
     @classmethod
     def process_terminator(cls, signum, frame):
@@ -210,9 +207,32 @@ class DDPGLearner:
         DDPGLearner.as_server.close()
         exit(0)
 
-    def train(self):
-        # TODO: Write training logic
-        pass
+    def push_parameters(self, parameter_server_conn):
+        actor_weights = self.actor_network.get_weights()
+        for i in range(len(actor_weights)):
+            actor_weights[i] = tf.io.serialize_tensor(tf.constant(actor_weights[i])).numpy()
+        critic_weights = self.critic_network.get_weights()
+        for i in range(len(critic_weights)):
+            critic_weights[i] = tf.io.serialize_tensor(tf.constant(critic_weights[i])).numpy()
+        try:
+            parameter_server_conn.root.set_params(actor_weights, critic_weights)
+        except Exception as e:
+            print(e)
+            # Ignore if parameter server is not available (It will be available when LC restarts the process hopefully)
+
+    def train(self, config):
+        # Loading
+        self.load(self.agent_path)
+        # Initialize Parameter Server
+        parameter_server_conn = rpyc.connect("localhost", port=config["param_server_port"])
+        try:
+            parameter_server_conn.root.set_nnet_arch(json.dumps(self.actor_network.get_config()), json.dumps(self.critic_network.get_config()))
+        except Exception as e:
+            print(e)
+            # Ignore if parameter server is not available (It will be available when LC restarts the process hopefully)
+        self.push_parameters(parameter_server_conn)
+
+        # TODO: Training Logic
 
     @tf.function
     def _train_step(self, current_states, actions, rewards, next_states):
@@ -246,18 +266,22 @@ class DDPGLearner:
         self.replay_buffer.save(os.path.join(path, "replay"))
 
     def load(self, path=""):
-        self.actor_network = load_model(os.path.join(path, "actor_network"))
-        self.critic_network = load_model(os.path.join(path, "critic_network"))
         try:
-            self.actor_target_network = load_model(os.path.join(path, "actor_target_network"))
+            self.actor_network = load_model(os.path.join(path, "actor_network"))
+            self.critic_network = load_model(os.path.join(path, "critic_network"))
+            try:
+                self.actor_target_network = load_model(os.path.join(path, "actor_target_network"))
+            except:
+                if self.actor_network is not None:
+                    self.actor_target_network = clone_model(self.actor_network)
+            try:
+                self.critic_target_network = load_model(os.path.join(path, "critic_target_network"))
+            except:
+                if self.critic_network is not None:
+                    self.critic_target_network = clone_model(self.critic_network)
         except:
-            if self.actor_network is not None:
-                self.actor_target_network = clone_model(self.actor_network)
-        try:
-            self.critic_target_network = load_model(os.path.join(path, "critic_target_network"))
-        except:
-            if self.critic_network is not None:
-                self.critic_target_network = clone_model(self.critic_network)
+            # If actor or critic networks are not found, work with current actor and critic networks
+            pass
         self.replay_buffer.load(os.path.join(path, "replay"))
 
     def close(self):
@@ -269,19 +293,84 @@ class DDPGLearner:
 
 @rpyc.service
 class ParameterService(rpyc.Service):
+
     # Parameter Service serves the parameters for the learner
-    def __init__(self, start_event):
+    def __init__(self, start_event, arch_push_event, first_param_push_event):
         self.start_event = start_event
+        self.arch_push_event = arch_push_event
+        self.first_param_push_event = first_param_push_event
 
     @rpyc.exposed
     def start_work(self):
         self.start_event.set()
 
+    @rpyc.exposed
+    def some2(self):
+        self.arch_push_event.set()
+        self.first_param_push_event.set()
+
+
+    @rpyc.exposed
+    def get_nnet_arch(self):
+        self.arch_push_event.wait()
+        return ParameterMain.actor_config, ParameterMain.critic_config
+
+    @rpyc.exposed
+    def get_params(self):
+        self.first_param_push_event.wait()
+        return ParameterMain.actor_params, ParameterMain.critic_params
+
+    @rpyc.exposed
+    def set_nnet_arch(self, actor_config, critic_config):
+        ParameterMain.actor_config = actor_config
+        ParameterMain.critic_config = critic_config
+        self.arch_push_event.set()
+
+    @rpyc.exposed
+    def set_params(self, actor_params, critic_params):
+        ParameterMain.actor_params = self.rpyc_deep_copy(actor_params)
+        ParameterMain.critic_params = self.rpyc_deep_copy(critic_params)
+        self.first_param_push_event.set()
+
+    def rpyc_deep_copy(self, obj):
+        """
+        Makes a deep copy of netref objects that come as a result of RPyC remote method calls.
+        When RPyC client obtains a result from the remote method call, this result may contain
+        non-scalar types (List, Dict, ...) which are given as a wrapper class (a netref object).
+        This class does not have all the standard attributes (e.g. dict.tems() does not work)
+        and in addition the objects only exist while the connection is active (are weekly referenced).
+        To have a retuned value represented by python's native datatypes and to by able to use it
+        after the connection is terminated, this routine makes a recursive copy of the given object.
+        Currently, only `list` and `dist` types are supported for deep_copy, but other types may be
+        added easily.
+        Note there is allow_attribute_public option for RPyC connection, which may solve the problem too,
+        but it have not worked for me.
+        Example:
+            s = rpyc.connect(host1, port)
+            result = rpyc_deep_copy(s.root.remote_method())
+            # if result is a Dict:
+            for k,v in result.items(): print(k,v)
+        """
+        if (isinstance(obj, list)):
+            copied_list = []
+            for value in obj: copied_list.append(self.rpyc_deep_copy(value))
+            return copied_list
+        elif (isinstance(obj, dict)):
+            copied_dict = {}
+            for key in obj: copied_dict[key] = self.rpyc_deep_copy(obj[key])
+            return copied_dict
+        else:
+            return obj
 
 class ParameterMain:
     ps_server = None
     lc_connection = None
     parameter_main_object = None
+
+    actor_config = None
+    critic_config = None
+    actor_params = None
+    critic_params = None
 
     @classmethod
     def start_ps_server(cls, ps_server):
@@ -297,8 +386,10 @@ class ParameterMain:
 
         # Starting Parameter Server
         start_event = threading.Event()
-        ps_service = classpartial(ParameterService, start_event)
-        ParameterMain.ps_server = ThreadedServer(ps_service, port=config["param_server_port"])
+        arch_push_event = threading.Event()
+        first_param_push_event = threading.Event()
+        ps_service = classpartial(ParameterService, start_event, arch_push_event, first_param_push_event)
+        ParameterMain.ps_server = ThreadedServer(ps_service, port=config["param_server_port"], protocol_config={'allow_public_attrs': True,})
         t1 = threading.Thread(target=ParameterMain.start_ps_server, args=[ParameterMain.ps_server])
         t1.start()
 

@@ -6,6 +6,10 @@ class ReplayBuffer:
     # Description: This class is used to store experience replays by different kinds of
     #           RL Algorithms.
 
+    def __init__(self, max_transitions = 1000, continuous_actions = False):
+        self.max_transitions = max_transitions
+        self.continuous_actions = continuous_actions
+
     # Inserts transition to buffer
     def insert_transition(self, transition):
         pass
@@ -26,11 +30,10 @@ class ReplayBuffer:
 class UniformReplay(ReplayBuffer):
     # This class is an implementation of a simple Uniform Replay Buffer
 
-    def __init__(self, max_transitions=1000, continuous=False):
-        self.max_transitions = max_transitions
-        self.continuous = continuous
+    def __init__(self, max_transitions=1000, continuous_actions=False):
+        super().__init__(max_transitions, continuous_actions)
         self.current_states = tf.TensorArray(tf.float32, size=0, dynamic_size=True, clear_after_read=False)
-        if self.continuous:
+        if self.continuous_actions:
             self.actions = tf.TensorArray(tf.float32, size=0, dynamic_size=True, clear_after_read=False)
         else:
             self.actions = tf.TensorArray(tf.int32, size=0, dynamic_size=True, clear_after_read=False)
@@ -72,7 +75,7 @@ class UniformReplay(ReplayBuffer):
             current_states = self.current_states.unstack(
                 tf.io.parse_tensor(tf.io.read_file(os.path.join(path, "current_states.tfw")), tf.float32))
 
-            if self.continuous:
+            if self.continuous_actions:
                 actions = self.actions.unstack(
                     tf.io.parse_tensor(tf.io.read_file(os.path.join(path, "actions.tfw")), tf.float32))
             else:
@@ -92,5 +95,4 @@ class UniformReplay(ReplayBuffer):
             self.current_index = self.current_states.size().numpy()
             print("Found", self.current_states.size().numpy(), "transitions")
         except Exception as e:
-            print(e)
             print("No Experience Replay found")
