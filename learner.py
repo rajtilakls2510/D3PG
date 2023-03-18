@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import json
+import base64
 import threading
 from signal import signal, SIGINT, SIGTERM
 import rpyc
@@ -209,13 +210,19 @@ class DDPGLearner:
 
     def push_parameters(self, parameter_server_conn):
         actor_weights = self.actor_network.get_weights()
+
+        # Protocol for Sending:
+        # - Serialize Tensor
+        # - Base64 Encode it
+        # - Convert list of parameters to json
+
         for i in range(len(actor_weights)):
-            actor_weights[i] = tf.io.serialize_tensor(tf.constant(actor_weights[i])).numpy()
+            actor_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.constant(actor_weights[i])).numpy()).decode('ascii')
         critic_weights = self.critic_network.get_weights()
         for i in range(len(critic_weights)):
-            critic_weights[i] = tf.io.serialize_tensor(tf.constant(critic_weights[i])).numpy()
+            critic_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.constant(critic_weights[i])).numpy()).decode('ascii')
         try:
-            parameter_server_conn.root.set_params(actor_weights, critic_weights)
+            parameter_server_conn.root.set_params(json.dumps(actor_weights), json.dumps(critic_weights))
         except Exception as e:
             print(e)
             # Ignore if parameter server is not available (It will be available when LC restarts the process hopefully)
@@ -328,39 +335,39 @@ class ParameterService(rpyc.Service):
 
     @rpyc.exposed
     def set_params(self, actor_params, critic_params):
-        ParameterMain.actor_params = self.rpyc_deep_copy(actor_params)
-        ParameterMain.critic_params = self.rpyc_deep_copy(critic_params)
+        ParameterMain.actor_params = actor_params
+        ParameterMain.critic_params = critic_params
         self.first_param_push_event.set()
 
-    def rpyc_deep_copy(self, obj):
-        """
-        Makes a deep copy of netref objects that come as a result of RPyC remote method calls.
-        When RPyC client obtains a result from the remote method call, this result may contain
-        non-scalar types (List, Dict, ...) which are given as a wrapper class (a netref object).
-        This class does not have all the standard attributes (e.g. dict.tems() does not work)
-        and in addition the objects only exist while the connection is active (are weekly referenced).
-        To have a retuned value represented by python's native datatypes and to by able to use it
-        after the connection is terminated, this routine makes a recursive copy of the given object.
-        Currently, only `list` and `dist` types are supported for deep_copy, but other types may be
-        added easily.
-        Note there is allow_attribute_public option for RPyC connection, which may solve the problem too,
-        but it have not worked for me.
-        Example:
-            s = rpyc.connect(host1, port)
-            result = rpyc_deep_copy(s.root.remote_method())
-            # if result is a Dict:
-            for k,v in result.items(): print(k,v)
-        """
-        if (isinstance(obj, list)):
-            copied_list = []
-            for value in obj: copied_list.append(self.rpyc_deep_copy(value))
-            return copied_list
-        elif (isinstance(obj, dict)):
-            copied_dict = {}
-            for key in obj: copied_dict[key] = self.rpyc_deep_copy(obj[key])
-            return copied_dict
-        else:
-            return obj
+    # def rpyc_deep_copy(self, obj):
+    #     """
+    #     Makes a deep copy of netref objects that come as a result of RPyC remote method calls.
+    #     When RPyC client obtains a result from the remote method call, this result may contain
+    #     non-scalar types (List, Dict, ...) which are given as a wrapper class (a netref object).
+    #     This class does not have all the standard attributes (e.g. dict.tems() does not work)
+    #     and in addition the objects only exist while the connection is active (are weekly referenced).
+    #     To have a retuned value represented by python's native datatypes and to by able to use it
+    #     after the connection is terminated, this routine makes a recursive copy of the given object.
+    #     Currently, only `list` and `dist` types are supported for deep_copy, but other types may be
+    #     added easily.
+    #     Note there is allow_attribute_public option for RPyC connection, which may solve the problem too,
+    #     but it have not worked for me.
+    #     Example:
+    #         s = rpyc.connect(host1, port)
+    #         result = rpyc_deep_copy(s.root.remote_method())
+    #         # if result is a Dict:
+    #         for k,v in result.items(): print(k,v)
+    #     """
+    #     if (isinstance(obj, list)):
+    #         copied_list = []
+    #         for value in obj: copied_list.append(self.rpyc_deep_copy(value))
+    #         return copied_list
+    #     elif (isinstance(obj, dict)):
+    #         copied_dict = {}
+    #         for key in obj: copied_dict[key] = self.rpyc_deep_copy(obj[key])
+    #         return copied_dict
+    #     else:
+    #         return obj
 
 class ParameterMain:
     ps_server = None
