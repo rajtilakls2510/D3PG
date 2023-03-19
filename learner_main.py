@@ -2,6 +2,10 @@ import learner
 import tensorflow as tf
 from tensorflow.keras import Model
 import tensorflow.keras.layers as layers
+from tensorflow.keras import Model, Input
+from tensorflow.keras.layers import Dense, Concatenate, BatchNormalization
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.initializers import RandomUniform
 import replaybuffer
 
 # Set memory_growth option to True otherwise tensorflow will eat up all GPU memory
@@ -12,18 +16,33 @@ except:
     pass
 
 def network_creator():
-    # Testing with actor and critic
-    inp = layers.Input(shape=(512, ))
-    x = layers.Dense(64, activation = "relu")(inp)
-    x = layers.Dense(64, activation = "relu")(x)
-    x = layers.Dense(64, activation = "relu")(x)
-    out = layers.Dense(10, activation = "softmax")(x)
+    # Actor Network
+    state_input = Input(shape=(8,))
+    x = Dense(256, activation="relu")(state_input)
+    x = BatchNormalization()(x)
+    x = Dense(256, activation="relu")(x)
+    x = BatchNormalization()(x)
+    x = Dense(256, activation="relu")(x)
+    x = BatchNormalization()(x)
+    output = Dense(2, activation="tanh", kernel_initializer=RandomUniform(minval=-0.003, maxval=0.003))(x)
+    actor_network = Model(inputs=state_input, outputs=output)
+    actor_network.compile(optimizer=Adam(learning_rate=0.0005))
 
-    actor = Model(inputs=inp, outputs=out)
+    # Critic Network
+    state_input = Input(shape=(8,))
+    x1 = Dense(192, activation="relu")(state_input)
+    x1 = BatchNormalization()(x1)
 
-    actor.compile(loss = "categorical_crossentropy", optimizer="adam", metrics=["accuracy"])
-    critic = actor
-    return actor, critic
+    action_input = Input(shape=(2,))
+    x2 = Dense(64, activation="relu")(action_input)
+
+    x = Concatenate()([x1, x2])
+    x = Dense(256, activation="relu")(x)
+    x = Dense(256, activation="relu")(x)
+    output = Dense(1, activation="linear", kernel_initializer=RandomUniform(minval=-0.003, maxval=0.003))(x)
+    critic_network = Model(inputs=[state_input, action_input], outputs=output)
+    critic_network.compile(optimizer=Adam(learning_rate=0.001))
+    return actor_network, critic_network
 
 
 learner_parameters = {

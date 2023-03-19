@@ -50,10 +50,7 @@ print(actor_network.summary())
 print(critic_network.summary())
 actor_weights, critic_weights = conn.root.get_params()
 
-# Protocol for Receiving:
-# - Convert Json to list of parameters
-# - Base64 Decode it
-# - Parse Tensor
+
 
 actor_weights = json.loads(actor_weights)
 critic_weights = json.loads(critic_weights)

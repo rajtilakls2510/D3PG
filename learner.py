@@ -164,7 +164,6 @@ class DDPGLearner:
             self.critic_target_network = None
         else:
             self.critic_target_network = clone_model(self.critic_network)
-        print(self.actor_network.get_weights())
         self.min_replay_transitions = learner_parameters["min_replay_transitions"]
         self.replay_buffer = learner_parameters["replay_buffer"](learner_parameters["replay_buffer_size"], continuous_actions=True)
         self.discount_factor = tf.convert_to_tensor(learner_parameters["discount_factor"])

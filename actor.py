@@ -4,7 +4,11 @@ import tensorflow as tf
 from rpyc.utils.helpers import classpartial
 import multiprocessing
 import os
+import json
+import base64
+import cv2
 from signal import signal, SIGINT, SIGTERM
+from concurrent.futures import ThreadPoolExecutor
 
 
 class DDPGActor:
@@ -12,20 +16,28 @@ class DDPGActor:
     ddpg_actor_object = None
     bgsrv = None
 
-    def __init__(self, env):
-        self.env = env
+    def __init__(self, env_creator, config, actor_parameters):
+        self.env_creator = env_creator
+        self.env = env_creator()
+        self.config = config
+        self.param_server_conn = None
         self.actor_network = None
         self.critic_network = None
+        self.exploration = actor_parameters["exploration"]
+        self.n_fetch = actor_parameters["n_fetch"]
+        self.n_push = actor_parameters["n_push"]
+        self.transition_buffer = []
+        self.thread_pool_executor = ThreadPoolExecutor(max_workers=actor_parameters["max_executors"])
 
     @classmethod
-    def process_starter(cls, env_creator, config):
+    def process_starter(cls, env_creator, config, actor_parameters):
         print(f"Actor Process Started: {os.getpid()}")
         signal(SIGINT, DDPGActor.process_terminator)
         signal(SIGTERM, DDPGActor.process_terminator)
 
         DDPGActor.ac_connection = rpyc.connect("localhost", port=config["acs_server_port"], service=ActorClientService)
         DDPGActor.bgsrv = rpyc.BgServingThread(DDPGActor.ac_connection)
-        DDPGActor.ddpg_actor_object = DDPGActor(env_creator())
+        DDPGActor.ddpg_actor_object = DDPGActor(env_creator, config, actor_parameters)
         DDPGActor.ddpg_actor_object.act()
 
     @classmethod
@@ -35,12 +47,64 @@ class DDPGActor:
         DDPGActor.bgsrv.stop()
         exit(0)
 
-    def act(self):
-        # TODO: Write acting logic
+    def pull_nnet_arch(self):
+        actor_config, critic_config = self.param_server_conn.root.get_nnet_arch()
+        self.actor_network = tf.keras.Model().from_config(json.loads(actor_config))
+        self.critic_network = tf.keras.Model().from_config(json.loads(critic_config))
+
+    def pull_nnet_params(self):
+        # Protocol for Receiving:
+        # - Convert Json to list of parameters
+        # - Base64 Decode Each value of list
+        # - Parse Tensor Each value of list
+        try:
+            actor_weights, critic_weights = self.param_server_conn.root.get_params()
+            actor_weights = json.loads(actor_weights)
+            critic_weights = json.loads(critic_weights)
+            for i in range(len(actor_weights)):
+                actor_weights[i] = tf.io.parse_tensor(base64.b64decode(actor_weights[i]), out_type=tf.float32)
+            for i in range(len(critic_weights)):
+                critic_weights[i] = tf.io.parse_tensor(base64.b64decode(critic_weights[i]), out_type=tf.float32)
+            self.actor_network.set_weights(actor_weights)
+            self.critic_network.set_weights(critic_weights)
+        except:
+            print("\rException: Couldn't pull parameters", end="")
+
+    def push_transition_data(self):
+        # TODO: Add Push Logic
         pass
 
-    def set_env(self, env):
-        self.env = env
+    def act(self):
+        self.param_server_conn = rpyc.connect(self.config["param_server_host"], port=self.config["param_server_port"])
+
+        # Pulling Neural Networks from Parameter Server
+        self.pull_nnet_arch()
+        self.pull_nnet_params()
+
+        # Start Running Episodes
+        self.actor_num = tf.random.uniform(shape=(), maxval=5000).numpy()
+        step = 0
+        while True:
+            self.env.reset()
+            current_state, _, _ = self.env.observe()
+            current_state = tf.convert_to_tensor(current_state, tf.float32)
+            while not self.env.is_episode_finished():
+                action, action_value, explored = self.get_action(current_state, explore=self.exploration)
+                self.env.take_action(action.numpy())
+                next_state, reward, frame = self.env.observe()
+                next_state = tf.convert_to_tensor(next_state, tf.float32)
+                reward = tf.convert_to_tensor(reward, tf.float32)
+
+                self.transition_buffer.append([current_state, action, reward, next_state,
+                                               tf.convert_to_tensor(self.env.is_episode_finished())])
+                # cv2.imshow("Actor: "+str(self.actor_num), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                # cv2.waitKey(1000 // 60)
+                step += 1
+
+                if step % self.n_fetch == 0:
+                    self.thread_pool_executor.submit(self.pull_nnet_params)
+                if step % self.n_push == 0:
+                    self.thread_pool_executor.submit(self.push_transition_data)
 
     def get_action(self, state, explore=0.0):
         state = tf.expand_dims(state, axis=0)
@@ -57,12 +121,19 @@ class DDPGActor:
 
     def close(self):
         # Release any resources here
-        pass
+        self.env.close()
+        if self.param_server_conn is not None:
+            self.param_server_conn.close()
+            self.param_server_conn = None
+        self.thread_pool_executor.shutdown()
+        # cv2.destroyWindow("Actor: "+str(self.actor_num))
+
 
 @rpyc.service
 class ActorClientService(rpyc.Service):
     # Actor client service to answer coordinator requests
     pass
+
 
 # ========================= Actor Coordinator Process ===============================
 
@@ -86,7 +157,7 @@ class ActorCoordinatorService(rpyc.Service):
 
     @rpyc.exposed
     def stop(self):
-        os.kill(os.getpid(), SIGTERM)
+        ActorCoordinator.process_terminator(None, None)
 
 
 class ActorCoordinator:
@@ -96,9 +167,10 @@ class ActorCoordinator:
     lc_connection = None
     acs_server = None
 
-    def __init__(self, env_creator, config):
+    def __init__(self, env_creator, config, actor_parameters):
         self.env_creator = env_creator
         self.config = config
+        self.actor_parameters = actor_parameters
 
     def start_acs_server(self):
         print("Starting Actor Coordinator Server")
@@ -117,8 +189,12 @@ class ActorCoordinator:
         t1.start()
 
         # Sending Confirmation to LC about successful process start
-        ActorCoordinator.lc_connection = rpyc.connect(self.config["lcs_server_host"], port=self.config["lcs_server_port"])
-        ActorCoordinator.lc_connection.root.component_started_confirmation("actors", info={"host": self.config["acs_server_host"], "port": self.config["acs_server_port"]})
+        ActorCoordinator.lc_connection = rpyc.connect(self.config["lcs_server_host"],
+                                                      port=self.config["lcs_server_port"])
+        ActorCoordinator.lc_connection.root.component_started_confirmation("actors",
+                                                                           info={"host": self.config["acs_server_host"],
+                                                                                 "port": self.config[
+                                                                                     "acs_server_port"]})
 
         # Waiting for start confirmation from LC
         start_event.wait()
@@ -126,10 +202,10 @@ class ActorCoordinator:
         # Starting Actors after confirmation from LC
         print("Starting Actor Processes")
         for i in range(self.config["num_actors"]):
-            p = multiprocessing.Process(target=DDPGActor.process_starter, args=(self.env_creator, self.config,))
+            p = multiprocessing.Process(target=DDPGActor.process_starter,
+                                        args=(self.env_creator, self.config, self.actor_parameters))
             p.start()
             ActorCoordinator.reference_holders["actor_processes"].append(p)
-
 
     def monitor_system(self):
         # Monitors the system. Makes sure all child processes are up and running. It is called after start is
@@ -140,7 +216,6 @@ class ActorCoordinator:
     def process_terminator(cls, signum, frame):
         print("Terminating Actor System")
 
-
         for actor_process in ActorCoordinator.reference_holders["actor_processes"]:
             actor_process.terminate()
 
@@ -149,4 +224,6 @@ class ActorCoordinator:
 
         ActorCoordinator.lc_connection.close()
         ActorCoordinator.acs_server.close()
+        if signum is None:
+            os.kill(os.getpid(), SIGTERM)
         exit(0)
