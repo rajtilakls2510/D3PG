@@ -3,9 +3,11 @@ import os
 import json
 import base64
 import threading
+import time
 from signal import signal, SIGINT, SIGTERM
 import rpyc
 import tensorflow as tf
+from queue import Queue
 from rpyc.utils.helpers import classpartial
 from rpyc.utils.server import ThreadedServer
 from tensorflow.keras.models import clone_model, load_model
@@ -216,10 +218,10 @@ class DDPGLearner:
         # - Convert list of parameters to json
 
         for i in range(len(actor_weights)):
-            actor_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.constant(actor_weights[i])).numpy()).decode('ascii')
+            actor_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.convert_to_tensor(actor_weights[i])).numpy()).decode('ascii')
         critic_weights = self.critic_network.get_weights()
         for i in range(len(critic_weights)):
-            critic_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.constant(critic_weights[i])).numpy()).decode('ascii')
+            critic_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.convert_to_tensor(critic_weights[i])).numpy()).decode('ascii')
         try:
             parameter_server_conn.root.set_params(json.dumps(actor_weights), json.dumps(critic_weights))
         except Exception as e:
@@ -433,12 +435,18 @@ class DataAccumulatorService(rpyc.Service):
     def start_work(self):
         self.start_event.set()
 
+    @rpyc.exposed
+    def push_actor_data(self, data):
+        Pusher.tsqueue.put(data)
+
 
 class Pusher:
     # Pushes the data in the queue into algorithm process
     das_server = None
     lc_connection = None
     pusher_object = None
+    tsqueue = None
+
 
     @classmethod
     def start_das_server(cls, das_server):
@@ -468,7 +476,7 @@ class Pusher:
         start_event.wait()
 
         # After confirmation from LC, start pusher
-        Pusher.pusher_object.start()  # TODO: Add pusher logic
+        Pusher.pusher_object.start()
 
     @classmethod
     def process_terminator(cls, signum, frame):
@@ -478,8 +486,12 @@ class Pusher:
         exit(0)
 
     def start(self):
-        # Start thread-safe queue and that fun stuff
-        pass
+        if Pusher.tsqueue is None:
+            Pusher.tsqueue = Queue()
+
+        while True:
+            print(f"\rSize={Pusher.tsqueue.qsize()}", end=" "*5)
+            time.sleep(0.5)
 
     def close(self):
         # Release any resources here

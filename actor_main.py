@@ -47,14 +47,16 @@ config = {
     "acs_server_host": "localhost",
     "acs_server_port": 18865,
     "param_server_host": "localhost",
-    "param_server_port": 18864
+    "param_server_port": 18864,
+    "accum_server_host": "localhost",
+    "accum_server_port": 18863
 }
 
 actor_parameters = {
     "exploration": 1.0,
     "n_fetch": 20,
     "n_push": 30,
-    "max_executors": 6
+    "max_executors": 10
 }
 
 if __name__ == "__main__":

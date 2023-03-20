@@ -21,12 +21,13 @@ class DDPGActor:
         self.env = env_creator()
         self.config = config
         self.param_server_conn = None
+        self.acs_server_conn = None
         self.actor_network = None
         self.critic_network = None
         self.exploration = actor_parameters["exploration"]
         self.n_fetch = actor_parameters["n_fetch"]
         self.n_push = actor_parameters["n_push"]
-        self.transition_buffer = []
+        self.transition_buffer = {"current_state": [], "action": [], "reward": [], "next_state": [], "terminated": []}
         self.thread_pool_executor = ThreadPoolExecutor(max_workers=actor_parameters["max_executors"])
 
     @classmethod
@@ -70,12 +71,31 @@ class DDPGActor:
         except:
             print("\rException: Couldn't pull parameters", end="")
 
-    def push_transition_data(self):
-        # TODO: Add Push Logic
-        pass
+    def push_transition_data(self, transition_buffer):
+        try:
+            transition_buffer["current_state"] = base64.b64encode(
+                tf.io.serialize_tensor(tf.convert_to_tensor(transition_buffer["current_state"])).numpy()).decode(
+                "ascii")
+            transition_buffer["action"] = base64.b64encode(
+                tf.io.serialize_tensor(tf.convert_to_tensor(transition_buffer["action"])).numpy()).decode(
+                "ascii")
+            transition_buffer["reward"] = base64.b64encode(
+                tf.io.serialize_tensor(tf.convert_to_tensor(transition_buffer["reward"])).numpy()).decode(
+                "ascii")
+            transition_buffer["next_state"] = base64.b64encode(
+                tf.io.serialize_tensor(tf.convert_to_tensor(transition_buffer["next_state"])).numpy()).decode(
+                "ascii")
+            transition_buffer["terminated"] = base64.b64encode(
+                tf.io.serialize_tensor(tf.convert_to_tensor(transition_buffer["terminated"])).numpy()).decode(
+                "ascii")
+            self.accum_server_conn.root.push_actor_data(json.dumps(transition_buffer))
+        except:
+            print("\rException: Couldn't push data", end="")
 
     def act(self):
+        # Setup Necessary connections to Parameter Server and Data Accumulator Server
         self.param_server_conn = rpyc.connect(self.config["param_server_host"], port=self.config["param_server_port"])
+        self.accum_server_conn = rpyc.connect(self.config["accum_server_host"], port=self.config["accum_server_port"])
 
         # Pulling Neural Networks from Parameter Server
         self.pull_nnet_arch()
@@ -95,8 +115,14 @@ class DDPGActor:
                 next_state = tf.convert_to_tensor(next_state, tf.float32)
                 reward = tf.convert_to_tensor(reward, tf.float32)
 
-                self.transition_buffer.append([current_state, action, reward, next_state,
-                                               tf.convert_to_tensor(self.env.is_episode_finished())])
+                self.transition_buffer["current_state"].append(current_state)
+                self.transition_buffer["action"].append(action)
+                self.transition_buffer["reward"].append(reward)
+                self.transition_buffer["next_state"].append(next_state)
+                self.transition_buffer["terminated"].append(tf.convert_to_tensor(self.env.is_episode_finished()))
+
+                # TODO: Add data for Logs
+
                 # cv2.imshow("Actor: "+str(self.actor_num), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                 # cv2.waitKey(1000 // 60)
                 step += 1
@@ -104,7 +130,9 @@ class DDPGActor:
                 if step % self.n_fetch == 0:
                     self.thread_pool_executor.submit(self.pull_nnet_params)
                 if step % self.n_push == 0:
-                    self.thread_pool_executor.submit(self.push_transition_data)
+                    self.thread_pool_executor.submit(self.push_transition_data, self.transition_buffer)
+                    self.transition_buffer = {"current_state": [], "action": [], "reward": [], "next_state": [],
+                                              "terminated": []}
 
     def get_action(self, state, explore=0.0):
         state = tf.expand_dims(state, axis=0)
