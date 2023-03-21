@@ -147,6 +147,11 @@ class AlgorithmService(rpyc.Service):
     def start_work(self):
         self.start_event.set()
 
+    @rpyc.exposed
+    def push_replay_data(self, data):
+        data_list = json.loads(data)
+        # TODO: Write replay insertion logic
+
 
 class DDPGLearner:
     as_server = None
@@ -439,11 +444,16 @@ class DataAccumulatorService(rpyc.Service):
     def push_actor_data(self, data):
         Pusher.tsqueue.put(data)
 
+    @rpyc.exposed
+    def collect_accum_data(self):
+        threading.Thread(target=Pusher.pusher_object.collect_and_push_data).start()
+
 
 class Pusher:
     # Pushes the data in the queue into algorithm process
     das_server = None
     lc_connection = None
+    alg_connection = None
     pusher_object = None
     tsqueue = None
 
@@ -476,7 +486,7 @@ class Pusher:
         start_event.wait()
 
         # After confirmation from LC, start pusher
-        Pusher.pusher_object.start()
+        Pusher.pusher_object.start(config)
 
     @classmethod
     def process_terminator(cls, signum, frame):
@@ -485,13 +495,24 @@ class Pusher:
         Pusher.das_server.close()
         exit(0)
 
-    def start(self):
+    def start(self, config):
+        Pusher.alg_connection = rpyc.connect("localhost", port=config["algo_server_port"])
         if Pusher.tsqueue is None:
             Pusher.tsqueue = Queue()
 
         while True:
             print(f"\rSize={Pusher.tsqueue.qsize()}", end=" "*5)
             time.sleep(0.5)
+
+    def collect_and_push_data(self):
+        print("Collecting")
+        size = Pusher.tsqueue.qsize()
+        data_list = []
+        while size > 0:
+            data_list.append(Pusher.tsqueue.get())
+            size -= 1
+        Pusher.alg_connection.root.push_replay_data(json.dumps(data_list))
+        print("Pushed")
 
     def close(self):
         # Release any resources here
