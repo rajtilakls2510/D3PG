@@ -140,8 +140,9 @@ class LearnerCoordinatorService(rpyc.Service):
 @rpyc.service
 class AlgorithmService(rpyc.Service):
     # Serves the requests about the algorithm
-    def __init__(self, start_event):
+    def __init__(self, start_event, ddpg_learner):
         self.start_event = start_event
+        self.ddpg_learner = ddpg_learner
 
     @rpyc.exposed
     def start_work(self):
@@ -154,11 +155,11 @@ class AlgorithmService(rpyc.Service):
 
 
 class DDPGLearner:
-    as_server = None
-    lc_connection = None
-    ddpg_learner_object = None
+    learner_object = None
 
     def __init__(self, learner_parameters):
+        self.as_server = None
+        self.lc_connection = None
         self.step_counter = 1
         self.agent_path = learner_parameters["agent_path"]
         self.actor_network, self.critic_network = learner_parameters["network_creator"]()
@@ -177,10 +178,9 @@ class DDPGLearner:
         self.tau = tf.convert_to_tensor(learner_parameters["tau"])
         self.critic_loss = learner_parameters["critic_loss"]()
 
-    @classmethod
-    def start_as_server(cls, as_server):
+    def start_as_server(self):
         print("Starting Algorithm Server")
-        as_server.start()
+        self.as_server.start()
 
     @classmethod
     def process_starter(cls, learner_parameters, config):
@@ -191,27 +191,29 @@ class DDPGLearner:
 
         # Starting Algorithm Server
         start_event = threading.Event()
-        as_service = classpartial(AlgorithmService, start_event)
-        DDPGLearner.as_server = ThreadedServer(as_service, port=config["algo_server_port"])
-        t1 = threading.Thread(target=DDPGLearner.start_as_server, args=[DDPGLearner.as_server])
+        learner = DDPGLearner(learner_parameters)
+        DDPGLearner.learner_object = learner
+        as_service = classpartial(AlgorithmService, start_event, learner)
+        learner.as_server = ThreadedServer(as_service, port=config["algo_server_port"])
+        t1 = threading.Thread(target=learner.start_as_server)
         t1.start()
 
         # Sending confirmation to LC about successful process start
-        DDPGLearner.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
-        DDPGLearner.lc_connection.root.component_started_confirmation("algo")
-        DDPGLearner.ddpg_learner_object = DDPGLearner(learner_parameters)
+        learner.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
+        learner.lc_connection.root.component_started_confirmation("algo")
 
         # Waiting for start confirmation from LC
         start_event.wait()
 
         # After confirmation from LC, start training
-        DDPGLearner.ddpg_learner_object.train(config)
+        learner.train(config)
 
     @classmethod
     def process_terminator(cls, signum, frame):
-        DDPGLearner.ddpg_learner_object.close()
-        DDPGLearner.lc_connection.close()
-        DDPGLearner.as_server.close()
+        learner = DDPGLearner.learner_object
+        learner.close()
+        learner.lc_connection.close()
+        learner.as_server.close()
         exit(0)
 
     def push_parameters(self, parameter_server_conn):
@@ -308,10 +310,11 @@ class DDPGLearner:
 class ParameterService(rpyc.Service):
 
     # Parameter Service serves the parameters for the learner
-    def __init__(self, start_event, arch_push_event, first_param_push_event):
+    def __init__(self, start_event, arch_push_event, first_param_push_event, param_object):
         self.start_event = start_event
         self.arch_push_event = arch_push_event
         self.first_param_push_event = first_param_push_event
+        self.param_object = param_object
 
     @rpyc.exposed
     def start_work(self):
@@ -326,69 +329,40 @@ class ParameterService(rpyc.Service):
     @rpyc.exposed
     def get_nnet_arch(self):
         self.arch_push_event.wait()
-        return ParameterMain.actor_config, ParameterMain.critic_config
+        return self.param_object.actor_config, self.param_object.critic_config
 
     @rpyc.exposed
     def get_params(self):
         self.first_param_push_event.wait()
-        return ParameterMain.actor_params, ParameterMain.critic_params
+        return self.param_object.actor_params, self.param_object.critic_params
 
     @rpyc.exposed
     def set_nnet_arch(self, actor_config, critic_config):
-        ParameterMain.actor_config = actor_config
-        ParameterMain.critic_config = critic_config
+        self.param_object.actor_config = actor_config
+        self.param_object.critic_config = critic_config
         self.arch_push_event.set()
 
     @rpyc.exposed
     def set_params(self, actor_params, critic_params):
-        ParameterMain.actor_params = actor_params
-        ParameterMain.critic_params = critic_params
+        self.param_object.actor_params = actor_params
+        self.param_object.critic_params = critic_params
         self.first_param_push_event.set()
 
-    # def rpyc_deep_copy(self, obj):
-    #     """
-    #     Makes a deep copy of netref objects that come as a result of RPyC remote method calls.
-    #     When RPyC client obtains a result from the remote method call, this result may contain
-    #     non-scalar types (List, Dict, ...) which are given as a wrapper class (a netref object).
-    #     This class does not have all the standard attributes (e.g. dict.tems() does not work)
-    #     and in addition the objects only exist while the connection is active (are weekly referenced).
-    #     To have a retuned value represented by python's native datatypes and to by able to use it
-    #     after the connection is terminated, this routine makes a recursive copy of the given object.
-    #     Currently, only `list` and `dist` types are supported for deep_copy, but other types may be
-    #     added easily.
-    #     Note there is allow_attribute_public option for RPyC connection, which may solve the problem too,
-    #     but it have not worked for me.
-    #     Example:
-    #         s = rpyc.connect(host1, port)
-    #         result = rpyc_deep_copy(s.root.remote_method())
-    #         # if result is a Dict:
-    #         for k,v in result.items(): print(k,v)
-    #     """
-    #     if (isinstance(obj, list)):
-    #         copied_list = []
-    #         for value in obj: copied_list.append(self.rpyc_deep_copy(value))
-    #         return copied_list
-    #     elif (isinstance(obj, dict)):
-    #         copied_dict = {}
-    #         for key in obj: copied_dict[key] = self.rpyc_deep_copy(obj[key])
-    #         return copied_dict
-    #     else:
-    #         return obj
 
 class ParameterMain:
-    ps_server = None
-    lc_connection = None
     parameter_main_object = None
 
-    actor_config = None
-    critic_config = None
-    actor_params = None
-    critic_params = None
+    def __init__(self):
+        self.ps_server = None
+        self.lc_connection = None
+        self.actor_config = None
+        self.critic_config = None
+        self.actor_params = None
+        self.critic_params = None
 
-    @classmethod
-    def start_ps_server(cls, ps_server):
+    def start_ps_server(self):
         print("Starting Parameter Server")
-        ps_server.start()
+        self.ps_server.start()
 
     @classmethod
     def process_starter(cls, config):
@@ -401,15 +375,17 @@ class ParameterMain:
         start_event = threading.Event()
         arch_push_event = threading.Event()
         first_param_push_event = threading.Event()
-        ps_service = classpartial(ParameterService, start_event, arch_push_event, first_param_push_event)
-        ParameterMain.ps_server = ThreadedServer(ps_service, port=config["param_server_port"], protocol_config={'allow_public_attrs': True,})
-        t1 = threading.Thread(target=ParameterMain.start_ps_server, args=[ParameterMain.ps_server])
+        param_object = ParameterMain()
+        ParameterMain.parameter_main_object = param_object
+        ps_service = classpartial(ParameterService, start_event, arch_push_event, first_param_push_event, param_object)
+        param_object.ps_server = ThreadedServer(ps_service, port=config["param_server_port"], protocol_config={'allow_public_attrs': True,})
+        t1 = threading.Thread(target=param_object.start_ps_server)
         t1.start()
 
         # Sending confirmation to LC about successful process start
-        ParameterMain.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
-        ParameterMain.lc_connection.root.component_started_confirmation("param")
-        ParameterMain.parameter_main_object = ParameterMain()
+        param_object.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
+        param_object.lc_connection.root.component_started_confirmation("param")
+
         # Not sure what to do with the object but still keeping it for potential future use
 
         # Waiting for start confirmation from LC
@@ -418,9 +394,10 @@ class ParameterMain:
 
     @classmethod
     def process_terminator(cls, signum, frame):
-        ParameterMain.parameter_main_object.close()
-        ParameterMain.lc_connection.close()
-        ParameterMain.ps_server.close()
+        param_object = ParameterMain.parameter_main_object
+        param_object.close()
+        param_object.lc_connection.close()
+        param_object.ps_server.close()
         exit(0)
 
     def close(self):
@@ -433,8 +410,9 @@ class ParameterMain:
 @rpyc.service
 class DataAccumulatorService(rpyc.Service):
     # Accumulates different kinds of data into a thread-safe queue
-    def __init__(self, start_event):
+    def __init__(self, start_event, pusher):
         self.start_event = start_event
+        self.pusher = pusher
 
     @rpyc.exposed
     def start_work(self):
@@ -442,26 +420,26 @@ class DataAccumulatorService(rpyc.Service):
 
     @rpyc.exposed
     def push_actor_data(self, data):
-        Pusher.tsqueue.put(data)
+        self.pusher.tsqueue.put(data)
 
     @rpyc.exposed
     def collect_accum_data(self):
-        threading.Thread(target=Pusher.pusher_object.collect_and_push_data).start()
+        threading.Thread(target=self.pusher.collect_and_push_data).start()
 
 
 class Pusher:
     # Pushes the data in the queue into algorithm process
-    das_server = None
-    lc_connection = None
-    alg_connection = None
     pusher_object = None
-    tsqueue = None
 
+    def __init__(self):
+        self.das_server = None
+        self.lc_connection = None
+        self.alg_connection = None
+        self.tsqueue = None
 
-    @classmethod
-    def start_das_server(cls, das_server):
+    def start_das_server(self):
         print("Starting Data Accumulator Server")
-        das_server.start()
+        self.das_server.start()
 
     @classmethod
     def process_starter(cls, config):
@@ -472,46 +450,48 @@ class Pusher:
 
         # Starting Data Accumulator Server
         start_event = threading.Event()
-        das_service = classpartial(DataAccumulatorService, start_event)
-        Pusher.das_server = ThreadedServer(das_service, port=config["accum_server_port"])
-        t1 = threading.Thread(target=Pusher.start_das_server, args=[Pusher.das_server])
+        pusher = Pusher()
+        Pusher.pusher_object = pusher
+        das_service = classpartial(DataAccumulatorService, start_event, pusher)
+        pusher.das_server = ThreadedServer(das_service, port=config["accum_server_port"])
+        t1 = threading.Thread(target=pusher.start_das_server)
         t1.start()
 
         # Sending confirmation to LC about successful process start
-        Pusher.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
-        Pusher.lc_connection.root.component_started_confirmation("accum")
-        Pusher.pusher_object = Pusher()
+        pusher.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
+        pusher.lc_connection.root.component_started_confirmation("accum")
 
         # Waiting for start confirmation from LC
         start_event.wait()
 
         # After confirmation from LC, start pusher
-        Pusher.pusher_object.start(config)
+        pusher.start(config)
 
     @classmethod
     def process_terminator(cls, signum, frame):
-        Pusher.pusher_object.close()
-        Pusher.lc_connection.close()
-        Pusher.das_server.close()
+        pusher = Pusher.pusher_object
+        pusher.close()
+        pusher.lc_connection.close()
+        pusher.das_server.close()
         exit(0)
 
     def start(self, config):
-        Pusher.alg_connection = rpyc.connect("localhost", port=config["algo_server_port"])
-        if Pusher.tsqueue is None:
-            Pusher.tsqueue = Queue()
+        self.alg_connection = rpyc.connect("localhost", port=config["algo_server_port"])
+        if self.tsqueue is None:
+            self.tsqueue = Queue()
 
         while True:
-            print(f"\rSize={Pusher.tsqueue.qsize()}", end=" "*5)
+            print(f"\rSize={self.tsqueue.qsize()}", end=" "*5)
             time.sleep(0.5)
 
     def collect_and_push_data(self):
         print("Collecting")
-        size = Pusher.tsqueue.qsize()
+        size = self.tsqueue.qsize()
         data_list = []
         while size > 0:
-            data_list.append(Pusher.tsqueue.get())
+            data_list.append(self.tsqueue.get())
             size -= 1
-        Pusher.alg_connection.root.push_replay_data(json.dumps(data_list))
+        self.alg_connection.root.push_replay_data(json.dumps(data_list))
         print("Pushed")
 
     def close(self):

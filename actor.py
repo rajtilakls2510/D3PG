@@ -12,11 +12,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 class DDPGActor:
-    ac_connection = None
     ddpg_actor_object = None
-    bgsrv = None
 
     def __init__(self, env_creator, config, actor_parameters):
+        self.ac_connection = None
+        self.bgsrv = None
         self.env_creator = env_creator
         self.env = env_creator()
         self.config = config
@@ -36,16 +36,19 @@ class DDPGActor:
         signal(SIGINT, DDPGActor.process_terminator)
         signal(SIGTERM, DDPGActor.process_terminator)
 
-        DDPGActor.ac_connection = rpyc.connect("localhost", port=config["acs_server_port"], service=ActorClientService)
-        DDPGActor.bgsrv = rpyc.BgServingThread(DDPGActor.ac_connection)
-        DDPGActor.ddpg_actor_object = DDPGActor(env_creator, config, actor_parameters)
-        DDPGActor.ddpg_actor_object.act()
+        actor_object = DDPGActor(env_creator, config, actor_parameters)
+        DDPGActor.ddpg_actor_object = actor_object
+        ac_service = classpartial(ActorClientService, actor_object)
+        actor_object.ac_connection = rpyc.connect("localhost", port=config["acs_server_port"], service=ac_service)
+        actor_object.bgsrv = rpyc.BgServingThread(actor_object.ac_connection)
+        actor_object.act()
 
     @classmethod
     def process_terminator(cls, signum, frame):
-        DDPGActor.ddpg_actor_object.close()
-        DDPGActor.ac_connection.close()
-        DDPGActor.bgsrv.stop()
+        actor_object = DDPGActor.ddpg_actor_object
+        actor_object.close()
+        actor_object.ac_connection.close()
+        actor_object.bgsrv.stop()
         exit(0)
 
     def pull_nnet_arch(self):
@@ -160,7 +163,9 @@ class DDPGActor:
 @rpyc.service
 class ActorClientService(rpyc.Service):
     # Actor client service to answer coordinator requests
-    pass
+
+    def __init__(self, actor):
+        self.actor = actor
 
 
 # ========================= Actor Coordinator Process ===============================

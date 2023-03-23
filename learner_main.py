@@ -1,7 +1,5 @@
 import learner
 import tensorflow as tf
-from tensorflow.keras import Model
-import tensorflow.keras.layers as layers
 from tensorflow.keras import Model, Input
 from tensorflow.keras.layers import Dense, Concatenate, BatchNormalization
 from tensorflow.keras.optimizers import Adam
