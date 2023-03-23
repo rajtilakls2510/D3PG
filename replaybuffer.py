@@ -14,6 +14,10 @@ class ReplayBuffer:
     def insert_transition(self, transition):
         pass
 
+    # Inserts a batch of transitions to the buffer
+    def insert_batch_transitions(self, transitions):
+        pass
+
     # Samples a batch of transitions from the buffer
     def sample_batch_transitions(self, batch_size=16):
         pass
@@ -53,6 +57,20 @@ class UniformReplay(ReplayBuffer):
     def insert_transition(self, transition):
         self._insert_transition_at(transition, self.current_index % self.max_transitions)
         self.current_index += 1
+
+    def insert_batch_transitions(self, transitions):
+        batch_size = transitions["current_state"].shape[0]
+
+        # TODO: Slow as Hell. Modify
+        for i in range(batch_size):
+            self.insert_transition([
+                transitions["current_state"][i],
+                transitions["action"][i],
+                transitions["reward"][i],
+                transitions["next_state"][i],
+                transitions["terminated"][i],
+            ])
+
 
     def sample_batch_transitions(self, batch_size=16):
         buf_len = self.current_states.size()

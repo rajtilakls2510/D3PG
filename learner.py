@@ -11,6 +11,7 @@ from queue import Queue
 from rpyc.utils.helpers import classpartial
 from rpyc.utils.server import ThreadedServer
 from tensorflow.keras.models import clone_model, load_model
+from time import perf_counter
 
 
 # ======================= Learner Main Process =========================================
@@ -148,10 +149,28 @@ class AlgorithmService(rpyc.Service):
     def start_work(self):
         self.start_event.set()
 
+    def parse_and_insert(self, data):
+        data_list = json.loads(data)
+        t1, t2 = 0, 0
+        for batch in data_list:
+            s1 = perf_counter()
+            batch = json.loads(batch)
+            batch["current_state"] = tf.io.parse_tensor(base64.b64decode(batch["current_state"]), out_type=tf.float32)
+            batch["action"] = tf.io.parse_tensor(base64.b64decode(batch["action"]), out_type=tf.float32)
+            batch["reward"] = tf.io.parse_tensor(base64.b64decode(batch["reward"]), out_type=tf.float32)
+            batch["next_state"] = tf.io.parse_tensor(base64.b64decode(batch["next_state"]), out_type=tf.float32)
+            batch["terminated"] = tf.io.parse_tensor(base64.b64decode(batch["terminated"]), out_type=tf.bool)
+            s2 = perf_counter()
+            self.ddpg_learner.replay_buffer.insert_batch_transitions(batch)
+            s3 = perf_counter()
+            t1 += (s2 - s1)
+            t2 += (s3 - s2)
+        # print(f"Parsing: {t1} Inserting: {t2}")
+        # print(f"Replay Size: {self.ddpg_learner.replay_buffer.current_states.size()}")
+
     @rpyc.exposed
     def push_replay_data(self, data):
-        data_list = json.loads(data)
-        # TODO: Write replay insertion logic
+        threading.Thread(target=self.parse_and_insert, args=(data,)).start()
 
 
 class DDPGLearner:
@@ -485,14 +504,15 @@ class Pusher:
             time.sleep(0.5)
 
     def collect_and_push_data(self):
-        print("Collecting")
         size = self.tsqueue.qsize()
         data_list = []
         while size > 0:
             data_list.append(self.tsqueue.get())
             size -= 1
-        self.alg_connection.root.push_replay_data(json.dumps(data_list))
-        print("Pushed")
+        try:
+            self.alg_connection.root.push_replay_data(json.dumps(data_list))
+        except:
+            pass
 
     def close(self):
         # Release any resources here
