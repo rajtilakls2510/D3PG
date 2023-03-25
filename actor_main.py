@@ -1,15 +1,19 @@
 import actor
 import environment
-import tensorflow as tf
+import os
+# Set this to not use Tensorflow-GPU
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+# import tensorflow as tf
 import numpy as np
 import gymnasium as gym
 
+
 # Set memory_growth option to True otherwise tensorflow will eat up all GPU memory
-try:
-    tf.config.experimental.set_memory_growth(tf.config.list_physical_devices('GPU')[0], True)
-except:
-    # Invalid device or cannot modify virtual devices once initialized.
-    pass
+# try:
+#     tf.config.experimental.set_memory_growth(tf.config.list_physical_devices('GPU')[0], True)
+# except:
+#     # Invalid device or cannot modify virtual devices once initialized.
+#     pass
 
 
 # Creating Custom Gym Environment wrapper to change the random action function

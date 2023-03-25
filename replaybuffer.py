@@ -1,12 +1,14 @@
+import threading
 import tensorflow as tf
 import os
+
 
 class ReplayBuffer:
     # Base class for any kind of ReplayBuffer
     # Description: This class is used to store experience replays by different kinds of
     #           RL Algorithms.
 
-    def __init__(self, max_transitions = 1000, continuous_actions = False):
+    def __init__(self, max_transitions=1000, continuous_actions=False):
         self.max_transitions = max_transitions
         self.continuous_actions = continuous_actions
 
@@ -20,6 +22,10 @@ class ReplayBuffer:
 
     # Samples a batch of transitions from the buffer
     def sample_batch_transitions(self, batch_size=16):
+        pass
+
+    # Returns the number of transitions in the replay buffer
+    def size(self):
         pass
 
     # Saves the buffer
@@ -45,6 +51,7 @@ class UniformReplay(ReplayBuffer):
         self.next_states = tf.TensorArray(tf.float32, size=0, dynamic_size=True, clear_after_read=False)
         self.terminals = tf.TensorArray(tf.bool, size=0, dynamic_size=True, clear_after_read=False)
         self.current_index = 0
+        self.lock = threading.Lock()
 
     def _insert_transition_at(self, transition, index):
         self.current_states = self.current_states.write(index, transition[0])
@@ -60,35 +67,43 @@ class UniformReplay(ReplayBuffer):
 
     def insert_batch_transitions(self, transitions):
         batch_size = transitions["current_state"].shape[0]
-
-        # TODO: Slow as Hell. Modify
-        for i in range(batch_size):
-            self.insert_transition([
-                transitions["current_state"][i],
-                transitions["action"][i],
-                transitions["reward"][i],
-                transitions["next_state"][i],
-                transitions["terminated"][i],
-            ])
-
+        self.lock.acquire()
+        indices = [(self.current_index+i) % self.max_transitions for i in range(batch_size)]
+        self.current_states = self.current_states.scatter(indices, transitions["current_state"])
+        self.actions = self.actions.scatter(indices, transitions["action"])
+        self.rewards = self.rewards.scatter(indices, transitions["reward"])
+        self.next_states = self.next_states.scatter(indices, transitions["next_state"])
+        self.terminals = self.terminals.scatter(indices, transitions["terminated"])
+        self.current_index += batch_size
+        self.lock.release()
 
     def sample_batch_transitions(self, batch_size=16):
+        self.lock.acquire()
         buf_len = self.current_states.size()
         if buf_len <= batch_size:
             sampled_indices = tf.random.uniform(shape=(buf_len,), maxval=buf_len, dtype=tf.int32)
         else:
             sampled_indices = tf.random.uniform(shape=(batch_size,), maxval=buf_len, dtype=tf.int32)
-        return self.current_states.gather(sampled_indices), self.actions.gather(sampled_indices), self.rewards.gather(
+
+        current_states, actions, rewards, next_states, terminals = self.current_states.gather(sampled_indices), self.actions.gather(sampled_indices), self.rewards.gather(
             sampled_indices), self.next_states.gather(sampled_indices), self.terminals.gather(sampled_indices)
+        self.lock.release()
+        return current_states, actions, rewards, next_states, terminals
+
+    def size(self):
+        return self.current_states.size()
 
     def save(self, path=""):
+        self.lock.acquire()
         tf.io.write_file(os.path.join(path, "current_states.tfw"), tf.io.serialize_tensor(self.current_states.stack()))
         tf.io.write_file(os.path.join(path, "actions.tfw"), tf.io.serialize_tensor(self.actions.stack()))
         tf.io.write_file(os.path.join(path, "rewards.tfw"), tf.io.serialize_tensor(self.rewards.stack()))
         tf.io.write_file(os.path.join(path, "next_states.tfw"), tf.io.serialize_tensor(self.next_states.stack()))
         tf.io.write_file(os.path.join(path, "terminals.tfw"), tf.io.serialize_tensor(self.terminals.stack()))
+        self.lock.release()
 
     def load(self, path=""):
+        self.lock.acquire()
         try:
             current_states = self.current_states.unstack(
                 tf.io.parse_tensor(tf.io.read_file(os.path.join(path, "current_states.tfw")), tf.float32))
@@ -114,3 +129,4 @@ class UniformReplay(ReplayBuffer):
             print("Found", self.current_states.size().numpy(), "transitions")
         except Exception as e:
             print("No Experience Replay found")
+        self.lock.release()

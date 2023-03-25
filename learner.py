@@ -165,7 +165,7 @@ class AlgorithmService(rpyc.Service):
             s3 = perf_counter()
             t1 += (s2 - s1)
             t2 += (s3 - s2)
-        # print(f"Parsing: {t1} Inserting: {t2}")
+        print(f"Parsing: {t1} Inserting: {t2}")
         # print(f"Replay Size: {self.ddpg_learner.replay_buffer.current_states.size()}")
 
     @rpyc.exposed
@@ -177,6 +177,8 @@ class DDPGLearner:
     learner_object = None
 
     def __init__(self, learner_parameters):
+        self.parameter_server_conn = None
+        self.accum_server_conn = None
         self.as_server = None
         self.lc_connection = None
         self.step_counter = 1
@@ -191,7 +193,10 @@ class DDPGLearner:
             self.critic_target_network = None
         else:
             self.critic_target_network = clone_model(self.critic_network)
-        self.min_replay_transitions = learner_parameters["min_replay_transitions"]
+        self.n_learn = learner_parameters["n_learn"]
+        self.n_persis = learner_parameters["n_persis"]
+        self.batch_size = learner_parameters["batch_size"]
+        # self.min_replay_transitions = learner_parameters["min_replay_transitions"]
         self.replay_buffer = learner_parameters["replay_buffer"](learner_parameters["replay_buffer_size"], continuous_actions=True)
         self.discount_factor = tf.convert_to_tensor(learner_parameters["discount_factor"])
         self.tau = tf.convert_to_tensor(learner_parameters["tau"])
@@ -235,7 +240,7 @@ class DDPGLearner:
         learner.as_server.close()
         exit(0)
 
-    def push_parameters(self, parameter_server_conn):
+    def push_parameters(self):
         actor_weights = self.actor_network.get_weights()
 
         # Protocol for Sending:
@@ -249,7 +254,7 @@ class DDPGLearner:
         for i in range(len(critic_weights)):
             critic_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.convert_to_tensor(critic_weights[i])).numpy()).decode('ascii')
         try:
-            parameter_server_conn.root.set_params(json.dumps(actor_weights), json.dumps(critic_weights))
+            self.parameter_server_conn.root.set_params(json.dumps(actor_weights), json.dumps(critic_weights))
         except Exception as e:
             print(e)
             # Ignore if parameter server is not available (It will be available when LC restarts the process hopefully)
@@ -258,15 +263,32 @@ class DDPGLearner:
         # Loading
         self.load(self.agent_path)
         # Initialize Parameter Server
-        parameter_server_conn = rpyc.connect("localhost", port=config["param_server_port"])
-        try:
-            parameter_server_conn.root.set_nnet_arch(json.dumps(self.actor_network.get_config()), json.dumps(self.critic_network.get_config()))
-        except Exception as e:
-            print(e)
-            # Ignore if parameter server is not available (It will be available when LC restarts the process hopefully)
-        self.push_parameters(parameter_server_conn)
+        self.parameter_server_conn = rpyc.connect("localhost", port=config["param_server_port"])
+        self.accum_server_conn = rpyc.connect("localhost", port=config["accum_server_port"])
+        self.parameter_server_conn.root.set_nnet_arch(json.dumps(self.actor_network.get_config()), json.dumps(self.critic_network.get_config()))
+        self.push_parameters()
 
-        # TODO: Training Logic
+        persis_steps = 0
+        while persis_steps <= self.n_persis:
+            learn_steps = 0
+
+            # Learning continuously without interruption for n_learn steps
+            while learn_steps <= self.n_learn:
+                current_states, actions, rewards, next_states, terminals = self.replay_buffer.sample_batch_transitions(
+                    batch_size=self.batch_size)
+                if current_states.shape[0] >= self.batch_size:
+                    self._train_step(current_states, actions, rewards, next_states)
+                    self.update_targets(self.actor_target_network.trainable_weights,
+                                        self.actor_network.trainable_weights, self.tau)
+                    self.update_targets(self.critic_target_network.trainable_weights,
+                                        self.critic_network.trainable_weights, self.tau)
+                learn_steps += 1
+
+            self.push_parameters()
+            self.accum_server_conn.root.collect_accum_data()
+            self.save(self.agent_path)
+            persis_steps += 1
+
 
     @tf.function
     def _train_step(self, current_states, actions, rewards, next_states):
@@ -319,8 +341,8 @@ class DDPGLearner:
         self.replay_buffer.load(os.path.join(path, "replay"))
 
     def close(self):
-        # Release any resources here
-        pass
+        if self.parameter_server_conn:
+            self.parameter_server_conn.close()
 
 
 # ======================= Parameter Server Process =========================================
@@ -415,13 +437,11 @@ class ParameterMain:
     def process_terminator(cls, signum, frame):
         param_object = ParameterMain.parameter_main_object
         param_object.close()
-        param_object.lc_connection.close()
-        param_object.ps_server.close()
         exit(0)
 
     def close(self):
-        # Release any resources here
-        pass
+        self.lc_connection.close()
+        self.ps_server.close()
 
 
 # ======================= Data Accumulator Process =========================================
@@ -490,8 +510,6 @@ class Pusher:
     def process_terminator(cls, signum, frame):
         pusher = Pusher.pusher_object
         pusher.close()
-        pusher.lc_connection.close()
-        pusher.das_server.close()
         exit(0)
 
     def start(self, config):
@@ -515,5 +533,5 @@ class Pusher:
             pass
 
     def close(self):
-        # Release any resources here
-        pass
+        self.lc_connection.close()
+        self.das_server.close()

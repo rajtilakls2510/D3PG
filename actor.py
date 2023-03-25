@@ -125,9 +125,21 @@ class DDPGActor:
                 self.transition_buffer["terminated"].append(tf.convert_to_tensor(self.env.is_episode_finished()))
 
                 # TODO: Add data for Logs
+                font = cv2.FONT_HERSHEY_SIMPLEX
 
-                # cv2.imshow("Actor: "+str(self.actor_num), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                # cv2.waitKey(1000 // 60)
+
+                # fontScale
+                fontScale = 0.3
+
+                # Blue color in BGR
+                color = (255, 0, 0)
+
+                # Line thickness of 2 px
+                thickness = 2
+                frame = cv2.putText(frame, f"Action: {action}", org=(10,12), fontFace=font, fontScale=fontScale, color=color,lineType=cv2.LINE_AA)
+                frame = cv2.putText(frame, f"Value: {action_value}", org=(10,24), fontFace=font, fontScale=fontScale, color=color,lineType=cv2.LINE_AA)
+                cv2.imshow("Actor: "+str(self.actor_num), cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                cv2.waitKey(1000 // 60)
                 step += 1
 
                 if step % self.n_fetch == 0:
@@ -157,7 +169,7 @@ class DDPGActor:
             self.param_server_conn.close()
             self.param_server_conn = None
         self.thread_pool_executor.shutdown()
-        # cv2.destroyWindow("Actor: "+str(self.actor_num))
+        cv2.destroyWindow("Actor: "+str(self.actor_num))
 
 
 @rpyc.service
