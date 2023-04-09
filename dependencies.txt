@@ -6,6 +6,8 @@ imageio
 imageio-ffmpeg
 opencv-python
 rpyc
+gymnasium
+gymnasium[classic_control]
 
 #GPU
 cudatoolkit

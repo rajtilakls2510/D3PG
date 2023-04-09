@@ -11,7 +11,8 @@ from queue import Queue
 from rpyc.utils.helpers import classpartial
 from rpyc.utils.server import ThreadedServer
 from tensorflow.keras.models import clone_model, load_model
-from time import perf_counter
+from tensorflow.keras import Model
+
 
 
 # ======================= Learner Main Process =========================================
@@ -151,7 +152,8 @@ class AlgorithmService(rpyc.Service):
 
     def parse_and_insert(self, data):
         data_list = json.loads(data)
-        t1, t2 = 0, 0
+        t1, t2, total_transitions = 0, 0, 0
+        from time import perf_counter
         for batch in data_list:
             s1 = perf_counter()
             batch = json.loads(batch)
@@ -165,7 +167,8 @@ class AlgorithmService(rpyc.Service):
             s3 = perf_counter()
             t1 += (s2 - s1)
             t2 += (s3 - s2)
-        print(f"Parsing: {t1} Inserting: {t2}")
+            total_transitions += batch["current_state"].shape[0]
+        print(f"Parsing: {t1} Inserting: {t2} Transitions: {total_transitions}")
         # print(f"Replay Size: {self.ddpg_learner.replay_buffer.current_states.size()}")
 
     @rpyc.exposed
@@ -201,6 +204,7 @@ class DDPGLearner:
         self.discount_factor = tf.convert_to_tensor(learner_parameters["discount_factor"])
         self.tau = tf.convert_to_tensor(learner_parameters["tau"])
         self.critic_loss = learner_parameters["critic_loss"]()
+        self.actor_learn = learner_parameters["actor_learn"]
 
     def start_as_server(self):
         print("Starting Algorithm Server")
@@ -259,6 +263,20 @@ class DDPGLearner:
             print(e)
             # Ignore if parameter server is not available (It will be available when LC restarts the process hopefully)
 
+    def save_keras_model(self, model, path):
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "config.json"), "w") as f:
+            f.write(json.dumps(model.get_config()))
+
+        model.save_weights(os.path.join(path, "weights"))
+
+    def load_keras_model(self,path):
+        with open(os.path.join(path, "config.json"), "r") as f:
+            config = json.loads(f.read())
+        model = Model().from_config(config)
+        model.load_weights(os.path.join(path, "weights"))
+        return model
+
     def train(self, config):
         # Loading
         self.load(self.agent_path)
@@ -271,28 +289,30 @@ class DDPGLearner:
         persis_steps = 0
         while persis_steps <= self.n_persis:
             learn_steps = 0
-
+            start = time.perf_counter()
             # Learning continuously without interruption for n_learn steps
             while learn_steps <= self.n_learn:
                 current_states, actions, rewards, next_states, terminals = self.replay_buffer.sample_batch_transitions(
                     batch_size=self.batch_size)
                 if current_states.shape[0] >= self.batch_size:
-                    self._train_step(current_states, actions, rewards, next_states)
-                    self.update_targets(self.actor_target_network.trainable_weights,
-                                        self.actor_network.trainable_weights, self.tau)
-                    self.update_targets(self.critic_target_network.trainable_weights,
-                                        self.critic_network.trainable_weights, self.tau)
+                    self._critic_train_step(current_states, actions, rewards, next_states)
+                    if learn_steps % self.actor_learn == 0:
+                        self._actor_train_step(current_states)
+                        self.update_targets(self.actor_target_network.trainable_weights,
+                                            self.actor_network.trainable_weights, self.tau)
+                        self.update_targets(self.critic_target_network.trainable_weights,
+                                            self.critic_network.trainable_weights, self.tau)
                 learn_steps += 1
-
-            self.push_parameters()
+                self.push_parameters()
+            end = time.perf_counter()
             self.accum_server_conn.root.collect_accum_data()
-            self.save(self.agent_path)
+            # self.save(self.agent_path)
             persis_steps += 1
-
+            print(f"persis: {persis_steps} time: {end-start}s")
+            print(f"Persis: {persis_steps}")
 
     @tf.function
-    def _train_step(self, current_states, actions, rewards, next_states):
-
+    def _critic_train_step(self, current_states, actions, rewards, next_states):
         targets = tf.expand_dims(rewards, axis=1) + self.discount_factor * self.critic_target_network(
             [next_states, self.actor_target_network(next_states)])
 
@@ -302,6 +322,9 @@ class DDPGLearner:
 
         critic_grads = critic_tape.gradient(critic_loss, self.critic_network.trainable_weights)
         self.critic_network.optimizer.apply_gradients(zip(critic_grads, self.critic_network.trainable_weights))
+
+    @tf.function
+    def _actor_train_step(self, current_states):
 
         with tf.GradientTape() as actor_tape:
             actor_loss = -tf.reduce_mean(self.critic_network([current_states, self.actor_network(current_states)]))
@@ -320,6 +343,10 @@ class DDPGLearner:
         self.critic_network.save(os.path.join(path, "critic_network"))
         self.critic_target_network.save(os.path.join(path, "critic_target_network"))
         self.replay_buffer.save(os.path.join(path, "replay"))
+        # self.save_keras_model(self.actor_network, os.path.join(path, "actor_network"))
+        # self.save_keras_model(self.actor_target_network, os.path.join(path, "actor_target_network"))
+        # self.save_keras_model(self.critic_network, os.path.join(path, "critic_network"))
+        # self.save_keras_model(self.critic_target_network, os.path.join(path, "critic_target_network"))
 
     def load(self, path=""):
         try:
@@ -335,9 +362,22 @@ class DDPGLearner:
             except:
                 if self.critic_network is not None:
                     self.critic_target_network = clone_model(self.critic_network)
-        except:
+        #     self.actor_network = self.load_keras_model(os.path.join(path, "actor_network"))
+        #     self.critic_network = self.load_keras_model(os.path.join(path, "critic_network"))
+        #
+        #     try:
+        #         self.actor_target_network = self.load_keras_model(os.path.join(path, "actor_target_network"))
+        #     except:
+        #         if self.actor_network is not None:
+        #             self.actor_target_network = clone_model(self.actor_network)
+        #     try:
+        #         self.critic_target_network = self.load_keras_model(os.path.join(path, "critic_target_network"))
+        #     except:
+        #         if self.critic_network is not None:
+        #             self.critic_target_network = clone_model(self.critic_network)
+        except Exception as e:
             # If actor or critic networks are not found, work with current actor and critic networks
-            pass
+            print(e)
         self.replay_buffer.load(os.path.join(path, "replay"))
 
     def close(self):

@@ -6,24 +6,26 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 # import tensorflow as tf
 import numpy as np
 import gymnasium as gym
+import random
+import tensorflow as tf
 
 
 # Set memory_growth option to True otherwise tensorflow will eat up all GPU memory
-# try:
-#     tf.config.experimental.set_memory_growth(tf.config.list_physical_devices('GPU')[0], True)
-# except:
-#     # Invalid device or cannot modify virtual devices once initialized.
-#     pass
+try:
+    tf.config.experimental.set_memory_growth(tf.config.list_physical_devices('GPU')[0], True)
+except:
+    # Invalid device or cannot modify virtual devices once initialized.
+    pass
 
 
 # Creating Custom Gym Environment wrapper to change the random action function
 class LunarLanderContinuousEnvironment(environment.GymEnvironment):
 
-    def __init__(self, env):
+    def __init__(self, env: gym.Env):
         super(LunarLanderContinuousEnvironment, self).__init__(env)
         self.theta = 0.15
         self.mean = np.zeros(2)
-        self.std_dev = float(0.2) * np.ones(2)
+        self.std_dev = float(0.5) * np.ones(2)
         self.dt = 1e-2
         self.x = np.zeros_like(self.mean)
 
@@ -57,10 +59,11 @@ config = {
 }
 
 actor_parameters = {
-    "exploration": 1.0,
-    "n_fetch": 20,
+    "exploration": 0.5,
+    "n_fetch": 1,
     "n_push": 30,
-    "max_executors": 10
+    "max_executors": 10,
+    "show_acting": False,
 }
 
 if __name__ == "__main__":
