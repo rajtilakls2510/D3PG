@@ -15,6 +15,7 @@ class DDPGActor:
     ddpg_actor_object = None
 
     def __init__(self, env_creator, config, actor_parameters):
+        self.accum_server_conn = None
         self.ac_connection = None
         self.bgsrv = None
         self.env_creator = env_creator
@@ -30,10 +31,15 @@ class DDPGActor:
         self.transition_buffer = {"current_state": [], "action": [], "reward": [], "next_state": [], "terminated": []}
         self.thread_pool_executor = ThreadPoolExecutor(max_workers=actor_parameters["max_executors"])
         self.show_acting = actor_parameters["show_acting"]
+        self.logs = []
+        self.actor_num = int(tf.random.uniform(shape=(), maxval=5000, dtype=tf.int32).numpy())
+        for l in actor_parameters["logs"]:
+            self.logs.append(l())
+        print(f"Actor Process Started: {os.getpid()} Actor ID: {self.actor_num}")
 
     @classmethod
     def process_starter(cls, env_creator, config, actor_parameters):
-        print(f"Actor Process Started: {os.getpid()}")
+
         signal(SIGINT, DDPGActor.process_terminator)
         signal(SIGTERM, DDPGActor.process_terminator)
 
@@ -92,9 +98,15 @@ class DDPGActor:
             transition_buffer["terminated"] = base64.b64encode(
                 tf.io.serialize_tensor(tf.convert_to_tensor(transition_buffer["terminated"])).numpy()).decode(
                 "ascii")
-            self.accum_server_conn.root.push_actor_data(json.dumps(transition_buffer))
+            self.accum_server_conn.root.push_actor_transition_data(json.dumps(transition_buffer))
         except:
-            print("\rException: Couldn't push data", end="")
+            print("\rException: Couldn't push transition data", end="")
+
+    def push_log_data(self, data):
+        try:
+            self.accum_server_conn.root.push_actor_log_data(json.dumps(data))
+        except:
+            print("\r Exception: Couldn't push log data", end="")
 
     def act(self):
         # Setup Necessary connections to Parameter Server and Data Accumulator Server
@@ -106,10 +118,18 @@ class DDPGActor:
         self.pull_nnet_params()
 
         # Start Running Episodes
-        self.actor_num = tf.random.uniform(shape=(), maxval=5000).numpy()
+
+        for log in self.logs:
+            log.on_task_begin()
+
         step = 0
+        episode = 0
         while True:
             self.env.reset()
+
+            for log in self.logs:
+                log.on_episode_begin({"episode": episode})
+
             current_state, _, _ = self.env.observe()
             current_state = tf.convert_to_tensor(current_state, tf.float32)
             while not self.env.is_episode_finished():
@@ -126,7 +146,20 @@ class DDPGActor:
                 self.transition_buffer["terminated"].append(tf.convert_to_tensor(self.env.is_episode_finished()))
 
                 current_state = next_state
-                # TODO: Add data for Logs
+
+                step_data = {
+                    "current_state": current_state.numpy(),
+                    "action_value": action_value.numpy(),
+                    "action": action.numpy(),
+                    "reward": reward.numpy(),
+                    "next_state": next_state.numpy(),
+                    "explored": explored.numpy(),
+                    "frame": frame
+                }
+
+                for log in self.logs:
+                    log.on_episode_step(step_data)
+
                 if self.show_acting:
                     font = cv2.FONT_HERSHEY_SIMPLEX
                     # fontScale
@@ -149,6 +182,18 @@ class DDPGActor:
                     self.thread_pool_executor.submit(self.push_transition_data, self.transition_buffer)
                     self.transition_buffer = {"current_state": [], "action": [], "reward": [], "next_state": [],
                                               "terminated": []}
+
+            for log in self.logs:
+                log.on_episode_end()
+
+            data = {"actor": self.actor_num, "episode": episode, "log_data": {}}
+            for log in self.logs:
+                data["log_data"][log.name] = log.consume_data()
+            self.thread_pool_executor.submit(self.push_log_data, data)
+            episode += 1
+
+        for log in self.logs:
+            log.on_task_end()
 
     def get_action(self, state, explore=0.0):
         state = tf.expand_dims(state, axis=0)

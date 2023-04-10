@@ -5,6 +5,8 @@ import base64
 import threading
 import time
 from signal import signal, SIGINT, SIGTERM
+
+import pandas as pd
 import rpyc
 import tensorflow as tf
 from queue import Queue
@@ -77,7 +79,7 @@ class LearnerCoordinator:
         # Starting Data Accumulator Process
         print("Starting Data Accumulator Process")
         self.reference_holders["accum_process"] = multiprocessing.Process(target=Pusher.process_starter,
-                                                                          args=(self.config,),
+                                                                          args=(self.learner_parameters, self.config),
                                                                           name='DataAccumulator')
         self.reference_holders["accum_process"].start()
 
@@ -303,10 +305,10 @@ class DDPGLearner:
                         self.update_targets(self.critic_target_network.trainable_weights,
                                             self.critic_network.trainable_weights, self.tau)
                 learn_steps += 1
-                self.push_parameters()
             end = time.perf_counter()
-            self.accum_server_conn.root.collect_accum_data()
-            # self.save(self.agent_path)
+            self.push_parameters()
+            self.accum_server_conn.root.collect_accum_data(persis_steps * self.n_learn)
+            self.save(self.agent_path)
             persis_steps += 1
             print(f"persis: {persis_steps} time: {end-start}s")
             print(f"Persis: {persis_steps}")
@@ -498,30 +500,39 @@ class DataAccumulatorService(rpyc.Service):
         self.start_event.set()
 
     @rpyc.exposed
-    def push_actor_data(self, data):
+    def push_actor_transition_data(self, data):
         self.pusher.tsqueue.put(data)
 
     @rpyc.exposed
-    def collect_accum_data(self):
-        threading.Thread(target=self.pusher.collect_and_push_data).start()
+    def push_actor_log_data(self, data):
+        self.pusher.logqueue.put(data)
+
+    @rpyc.exposed
+    def collect_accum_data(self, train_step):
+        threading.Thread(target=self.pusher.collect_and_push_data, args=(train_step, )).start()
 
 
 class Pusher:
     # Pushes the data in the queue into algorithm process
     pusher_object = None
 
-    def __init__(self):
+    def __init__(self, learner_parameters):
         self.das_server = None
         self.lc_connection = None
         self.alg_connection = None
         self.tsqueue = None
+        self.logqueue = None
+        self.agent_path = learner_parameters["agent_path"]
+        self.actors = {}
+        self.log_path = os.path.join(self.agent_path, "actor_logs")
+        os.makedirs(self.log_path, exist_ok=True)
 
     def start_das_server(self):
         print("Starting Data Accumulator Server")
         self.das_server.start()
 
     @classmethod
-    def process_starter(cls, config):
+    def process_starter(cls, learner_parameters, config):
         print(f"Data Accumulator Process Started: {os.getpid()}")
 
         signal(SIGINT, Pusher.process_terminator)
@@ -529,7 +540,7 @@ class Pusher:
 
         # Starting Data Accumulator Server
         start_event = threading.Event()
-        pusher = Pusher()
+        pusher = Pusher(learner_parameters)
         Pusher.pusher_object = pusher
         das_service = classpartial(DataAccumulatorService, start_event, pusher)
         pusher.das_server = ThreadedServer(das_service, port=config["accum_server_port"])
@@ -556,12 +567,14 @@ class Pusher:
         self.alg_connection = rpyc.connect("localhost", port=config["algo_server_port"])
         if self.tsqueue is None:
             self.tsqueue = Queue()
+        if self.logqueue is None:
+            self.logqueue = Queue()
 
         while True:
-            print(f"\rSize={self.tsqueue.qsize()}", end=" "*5)
+            print(f"\rTS Size={self.tsqueue.qsize()} Log Size={self.logqueue.qsize()}", end=" "*5)
             time.sleep(0.5)
 
-    def collect_and_push_data(self):
+    def collect_and_push_data(self, train_step):
         size = self.tsqueue.qsize()
         data_list = []
         while size > 0:
@@ -571,6 +584,26 @@ class Pusher:
             self.alg_connection.root.push_replay_data(json.dumps(data_list))
         except:
             pass
+
+        size = self.logqueue.qsize()
+        data_list = []
+        while size > 0:
+            data_list.append(json.loads(self.logqueue.get()))
+            size -= 1
+
+        for elem in data_list:
+            if elem["actor"] not in self.actors.keys():
+                actor_data = {"episode": [], "train_step": []}
+                for key in elem["log_data"].keys():
+                    actor_data[key] = []
+                self.actors[elem["actor"]] = actor_data
+            self.actors[elem["actor"]]["train_step"].append(train_step)
+            self.actors[elem["actor"]]["episode"].append(elem["episode"])
+            for key in elem["log_data"].keys():
+                self.actors[elem["actor"]][key].append(elem["log_data"][key])
+
+        for key, values in self.actors.items():
+            pd.DataFrame(values).to_csv(os.path.join(self.log_path, f"{key}.csv"), index=False)
 
     def close(self):
         self.lc_connection.close()
