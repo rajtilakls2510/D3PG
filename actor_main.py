@@ -21,11 +21,11 @@ except:
 
 # Creating Custom Gym Environment wrapper to change the random action function
 class MountainCarContinuousEnvironment(environment.GymEnvironment):
-    def __init__(self, env: gym.Env):
+    def __init__(self, env: gym.Env, std):
         super(MountainCarContinuousEnvironment, self).__init__(env)
         self.theta = 0.15
         self.mean = np.zeros(1)
-        self.std_dev = float(0.2) * np.ones(1)
+        self.std_dev = std * np.ones(1)
         self.dt = 1e-2
         self.x = np.zeros_like(self.mean)
 
@@ -54,16 +54,16 @@ class MountainCarContinuousEnvironment(environment.GymEnvironment):
         return reward
 
 
-def env_creator():
-    return MountainCarContinuousEnvironment(gym.make("MountainCarContinuous-v0", render_mode = "rgb_array"))
+def env_creator(std):
+    return MountainCarContinuousEnvironment(gym.make("MountainCarContinuous-v0", render_mode = "rgb_array"), std)
 
 
 config = {
-    "num_actors": 1,
+    "num_actors": 5,
     "lcs_server_host": "localhost",
     "lcs_server_port": 18861,
     "acs_server_host": "localhost",
-    "acs_server_port": 18866,
+    "acs_server_port": 18865,
     "param_server_host": "localhost",
     "param_server_port": 18864,
     "accum_server_host": "localhost",
@@ -71,12 +71,13 @@ config = {
 }
 
 actor_parameters = {
-    "exploration": 0.0,
+    "exploration": 1.0,
     "n_fetch": 20,
     "n_push": 30,
     "max_executors": 10,
-    "show_acting": True,
-    "logs": [logger.EpisodeLengthLogger, logger.TotalRewardLogger, logger.EpisodeTimeLogger]
+    "show_acting": False,
+    "logs": [logger.EpisodeLengthLogger, logger.TotalRewardLogger, logger.EpisodeTimeLogger],
+    "std": [0.2, 0.3, 0.4]
 }
 
 if __name__ == "__main__":

@@ -14,12 +14,13 @@ from concurrent.futures import ThreadPoolExecutor
 class DDPGActor:
     ddpg_actor_object = None
 
-    def __init__(self, env_creator, config, actor_parameters):
+    def __init__(self, env_creator, config, actor_parameters, i):
         self.accum_server_conn = None
         self.ac_connection = None
         self.bgsrv = None
         self.env_creator = env_creator
-        self.env = env_creator()
+        self.std = actor_parameters["std"]
+        self.env = env_creator(self.std[i%len(self.std)])
         self.config = config
         self.param_server_conn = None
         self.acs_server_conn = None
@@ -38,12 +39,12 @@ class DDPGActor:
         print(f"Actor Process Started: {os.getpid()} Actor ID: {self.actor_num}")
 
     @classmethod
-    def process_starter(cls, env_creator, config, actor_parameters):
+    def process_starter(cls, env_creator, config, actor_parameters, i):
 
         signal(SIGINT, DDPGActor.process_terminator)
         signal(SIGTERM, DDPGActor.process_terminator)
 
-        actor_object = DDPGActor(env_creator, config, actor_parameters)
+        actor_object = DDPGActor(env_creator, config, actor_parameters, i)
         DDPGActor.ddpg_actor_object = actor_object
         ac_service = classpartial(ActorClientService, actor_object)
         actor_object.ac_connection = rpyc.connect("localhost", port=config["acs_server_port"], service=ac_service)
@@ -295,7 +296,7 @@ class ActorCoordinator:
         print("Starting Actor Processes")
         for i in range(self.config["num_actors"]):
             p = multiprocessing.Process(target=DDPGActor.process_starter,
-                                        args=(self.env_creator, self.config, self.actor_parameters))
+                                        args=(self.env_creator, self.config, self.actor_parameters, i))
             p.start()
             ActorCoordinator.reference_holders["actor_processes"].append(p)
 
