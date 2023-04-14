@@ -115,5 +115,5 @@ class Plotter:
         plt.show(block=block)
 
 if __name__ == "__main__":
-    plotter = Plotter(actor_ids=[4294, 35, 2602], log_path=os.path.join("mountain_car_cont_agent3", "actor_logs"), track_logs=["EpisodeLength", "TotalReward", "EpisodeTime"])
+    plotter = Plotter(actor_ids=[1623, 1752, 4550], log_path=os.path.join("mountain_car_cont_agent5", "actor_logs"), track_logs=["EpisodeLength", "TotalReward", "EpisodeTime"], name="D3PG")
     plotter.show()

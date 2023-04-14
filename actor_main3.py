@@ -18,19 +18,17 @@ except:
     # Invalid device or cannot modify virtual devices once initialized.
     pass
 
-tf.random.set_seed(tf.random.uniform(shape=(1,), minval=0, maxval=1000, dtype=tf.int32))
-np.random.seed(np.random.randint(0, 1000))
 
 def env_creator(std):
     return environment.MountainCarContinuousEnvironment(gym.make("MountainCarContinuous-v0", render_mode = "rgb_array"), std)
 
 
 config = {
-    "num_actors": 5,
+    "num_actors": 1,
     "lcs_server_host": "localhost",
     "lcs_server_port": 18861,
     "acs_server_host": "localhost",
-    "acs_server_port": 18865,
+    "acs_server_port": 18867,
     "param_server_host": "localhost",
     "param_server_port": 18864,
     "accum_server_host": "localhost",
@@ -38,8 +36,8 @@ config = {
 }
 
 actor_parameters = {
-    "mode": "train",
-    "exploration": 1.0,
+    "mode": "eval",
+    "exploration": 0.0,
     "n_fetch": 20,
     "n_push": 30,
     "max_executors": 10,

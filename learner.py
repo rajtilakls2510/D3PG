@@ -138,6 +138,10 @@ class LearnerCoordinatorService(rpyc.Service):
         else:
             self.events[signature].set()
 
+    @rpyc.exposed
+    def terminate_system(self):
+        os.kill(os.getpid(), SIGINT)
+
 
 # ======================= Algorithm Process =========================================
 
@@ -304,14 +308,16 @@ class DDPGLearner:
                                             self.actor_network.trainable_weights, self.tau)
                         self.update_targets(self.critic_target_network.trainable_weights,
                                             self.critic_network.trainable_weights, self.tau)
+                        self.push_parameters()
                 learn_steps += 1
             end = time.perf_counter()
-            self.push_parameters()
+
             self.accum_server_conn.root.collect_accum_data(persis_steps * self.n_learn)
             self.save(self.agent_path)
             persis_steps += 1
             print(f"persis: {persis_steps} time: {end-start}s")
             print(f"Persis: {persis_steps}")
+        self.lc_connection.root.terminate_system()
 
     @tf.function
     def _critic_train_step(self, current_states, actions, rewards, next_states):

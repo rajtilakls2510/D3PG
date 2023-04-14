@@ -19,6 +19,7 @@ class DDPGActor:
         self.ac_connection = None
         self.bgsrv = None
         self.env_creator = env_creator
+        self.mode = actor_parameters["mode"]
         self.std = actor_parameters["std"]
         self.env = env_creator(self.std[i%len(self.std)])
         self.config = config
@@ -140,11 +141,12 @@ class DDPGActor:
                 next_state = tf.convert_to_tensor(next_state, tf.float32)
                 reward = tf.convert_to_tensor(reward, tf.float32)
 
-                self.transition_buffer["current_state"].append(current_state)
-                self.transition_buffer["action"].append(action)
-                self.transition_buffer["reward"].append(reward)
-                self.transition_buffer["next_state"].append(next_state)
-                self.transition_buffer["terminated"].append(tf.convert_to_tensor(self.env.is_episode_finished()))
+                if self.mode == "train":
+                    self.transition_buffer["current_state"].append(current_state)
+                    self.transition_buffer["action"].append(action)
+                    self.transition_buffer["reward"].append(reward)
+                    self.transition_buffer["next_state"].append(next_state)
+                    self.transition_buffer["terminated"].append(tf.convert_to_tensor(self.env.is_episode_finished()))
 
                 current_state = next_state
 
@@ -180,8 +182,9 @@ class DDPGActor:
                 if step % self.n_fetch == 0:
                     self.thread_pool_executor.submit(self.pull_nnet_params)
                 if step % self.n_push == 0:
-                    self.thread_pool_executor.submit(self.push_transition_data, self.transition_buffer)
-                    self.transition_buffer = {"current_state": [], "action": [], "reward": [], "next_state": [],
+                    if self.mode == "train":
+                        self.thread_pool_executor.submit(self.push_transition_data, self.transition_buffer)
+                        self.transition_buffer = {"current_state": [], "action": [], "reward": [], "next_state": [],
                                               "terminated": []}
 
             for log in self.logs:

@@ -36,7 +36,7 @@ def network_creator():
 
 
 learner_parameters = {
-    "agent_path": "mountain_car_cont_agent3",
+    "agent_path": "mountain_car_cont_agent5",
     "network_creator": network_creator,
     "n_learn": 1000,
     "n_persis": 1000,
