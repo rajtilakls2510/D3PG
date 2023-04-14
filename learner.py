@@ -317,7 +317,7 @@ class DDPGLearner:
             persis_steps += 1
             print(f"persis: {persis_steps} time: {end-start}s")
             print(f"Persis: {persis_steps}")
-        self.lc_connection.root.terminate_system()
+        # self.lc_connection.root.terminate_system()
 
     @tf.function
     def _critic_train_step(self, current_states, actions, rewards, next_states):

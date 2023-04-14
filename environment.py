@@ -117,6 +117,9 @@ class MountainCarContinuousEnvironment(GymEnvironment):
         action = np.clip(action, -1, 1)
         super(MountainCarContinuousEnvironment, self).take_action(action)
 
+
+class MountainCarContinuousEnvironmentShaped(MountainCarContinuousEnvironment):
+
     def calculate_reward(self):
         # reward = self.reward
         vel = abs(self.state[1]) * 1_000

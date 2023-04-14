@@ -39,7 +39,7 @@ learner_parameters = {
     "agent_path": "mountain_car_cont_agent5",
     "network_creator": network_creator,
     "n_learn": 1000,
-    "n_persis": 1000,
+    "n_persis": 500,
     "batch_size": 64,
     # "min_replay_transitions": 1000,
     "replay_buffer": replaybuffer.UniformReplay,
