@@ -7,6 +7,7 @@ import os
 import json
 import base64
 import cv2
+import gc
 from signal import signal, SIGINT, SIGTERM
 from concurrent.futures import ThreadPoolExecutor
 
@@ -37,7 +38,7 @@ class DDPGActor:
         self.actor_num = int(tf.random.uniform(shape=(), maxval=5000, dtype=tf.int32).numpy())
         for l in actor_parameters["logs"]:
             self.logs.append(l())
-        print(f"Actor Process Started: {os.getpid()} Actor ID: {self.actor_num}")
+        print(f"Actor Process Started: {os.getpid()} Actor ID: {self.actor_num} Std: {self.std[i%len(self.std)]}")
 
     @classmethod
     def process_starter(cls, env_creator, config, actor_parameters, i):
@@ -80,6 +81,8 @@ class DDPGActor:
                 critic_weights[i] = tf.io.parse_tensor(base64.b64decode(critic_weights[i]), out_type=tf.float32)
             self.actor_network.set_weights(actor_weights)
             self.critic_network.set_weights(critic_weights)
+            del actor_weights, critic_weights
+            gc.collect()
         except:
             print("\rException: Couldn't pull parameters", end="")
 
@@ -101,12 +104,16 @@ class DDPGActor:
                 tf.io.serialize_tensor(tf.convert_to_tensor(transition_buffer["terminated"])).numpy()).decode(
                 "ascii")
             self.accum_server_conn.root.push_actor_transition_data(json.dumps(transition_buffer))
+            del transition_buffer
+            gc.collect()
         except:
             print("\rException: Couldn't push transition data", end="")
 
     def push_log_data(self, data):
         try:
             self.accum_server_conn.root.push_actor_log_data(json.dumps(data))
+            del data
+            gc.collect()
         except:
             print("\r Exception: Couldn't push log data", end="")
 
@@ -184,9 +191,9 @@ class DDPGActor:
                 if step % self.n_push == 0:
                     if self.mode == "train":
                         self.thread_pool_executor.submit(self.push_transition_data, self.transition_buffer)
+                        del self.transition_buffer
                         self.transition_buffer = {"current_state": [], "action": [], "reward": [], "next_state": [],
                                               "terminated": []}
-
             for log in self.logs:
                 log.on_episode_end()
 
@@ -194,6 +201,8 @@ class DDPGActor:
             for log in self.logs:
                 data["log_data"][log.name] = log.consume_data()
             self.thread_pool_executor.submit(self.push_log_data, data)
+            del data
+            gc.collect()
             episode += 1
 
         for log in self.logs:

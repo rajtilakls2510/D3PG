@@ -65,10 +65,10 @@ class GymEnvironment(DRLEnvironment):
 
     # Returns the current state from observation, reward, frame
     def observe(self):
-        frame = self.env.render()
+        # frame = self.env.render()
         self.preprocessed_state = self.preprocess_state(self.state)
         self.reward = self.calculate_reward()
-        return self.preprocessed_state, self.reward, frame
+        return self.preprocessed_state, self.reward, None
 
     # Takes an action
     def take_action(self, action):
@@ -130,3 +130,32 @@ class MountainCarContinuousEnvironmentShaped(MountainCarContinuousEnvironment):
         if self.state[0] >= 0.5:
             reward = 100.0
         return reward
+
+
+class LunarLanderContinuousEnvironment(GymEnvironment):
+
+    def __init__(self, env, std):
+        super(LunarLanderContinuousEnvironment, self).__init__(env)
+        self.theta = 0.15
+        self.mean = np.zeros(2)
+        self.std_dev = float(std) * np.ones(2)
+        self.dt = 1e-2
+        self.x = np.zeros_like(self.mean)
+
+    def observe(self):
+        # frame = self.env.render()
+        self.preprocessed_state = self.preprocess_state(self.state)
+        self.reward = self.calculate_reward()
+        return self.preprocessed_state, self.reward, None
+
+    def get_randomized_action(self):
+        self.x = (
+                self.x
+                + self.theta * (self.mean - self.x) * self.dt
+                + self.std_dev * np.sqrt(self.dt) * np.random.normal(size=self.mean.shape)
+        )
+        return self.x
+
+    def take_action(self, action):
+        action = np.clip(action, -1, 1)
+        super(LunarLanderContinuousEnvironment, self).take_action(action)

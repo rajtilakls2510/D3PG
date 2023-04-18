@@ -18,9 +18,11 @@ except:
     # Invalid device or cannot modify virtual devices once initialized.
     pass
 
+tf.random.set_seed(tf.random.uniform(shape=(1,), minval=0, maxval=1000, dtype=tf.int32))
+np.random.seed(np.random.randint(0, 1000))
 
 def env_creator(std):
-    return environment.MountainCarContinuousEnvironment(gym.make("MountainCarContinuous-v0", render_mode = "rgb_array"), std)
+    return environment.LunarLanderContinuousEnvironment(gym.make("LunarLander-v2", continuous=True, render_mode = "rgb_array"), std)
 
 
 config = {
@@ -43,7 +45,7 @@ actor_parameters = {
     "max_executors": 10,
     "show_acting": False,
     "logs": [logger.EpisodeLengthLogger, logger.TotalRewardLogger, logger.EpisodeTimeLogger],
-    "std": [0.2, 0.3, 0.4]
+    "std": [0.05, 0.1, 0.2, 0.3, 0.4]
 }
 
 if __name__ == "__main__":

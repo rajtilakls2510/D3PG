@@ -5,7 +5,7 @@ import base64
 import threading
 import time
 from signal import signal, SIGINT, SIGTERM
-
+import gc
 import pandas as pd
 import rpyc
 import tensorflow as tf
@@ -21,8 +21,12 @@ from tensorflow.keras import Model
 
 
 class LearnerCoordinator:
+    terminate = False
+    obj = None
+
     # Main Learner process is started with the object of this class to start the learner system
     def __init__(self, learner_parameters, config):
+        LearnerCoordinator.terminate = False
         self.reference_holders = {"algo_process": None, "accum_process": None, "param_process": None}
         self.connection_holders = {"algo": None, "accum": None, "param": None, "actor_coords": []}
         self.lcs_server = None
@@ -30,6 +34,12 @@ class LearnerCoordinator:
         self.learner_parameters = learner_parameters
         self.config["actor_coords"] = []
         self.config["start_request_sent"] = False
+
+    @classmethod
+    def get_instance(cls, learner_parameters, config):
+        if LearnerCoordinator.obj is None:
+            LearnerCoordinator.obj = LearnerCoordinator(learner_parameters, config)
+        return LearnerCoordinator.obj
 
     def process_terminator(self, signum, frame):
         print("Terminating Learner and Actor systems")
@@ -113,7 +123,12 @@ class LearnerCoordinator:
     def monitor_system(self):
         # Monitors the system. Makes sure all child processes are up and running. It is called after start_system is
         # called
-        pass
+        # You gotta keep working for signals to be received
+        while True:
+            time.sleep(1)
+            if LearnerCoordinator.terminate:
+                LearnerCoordinator.obj.process_terminator(None, None)
+
 
 
 @rpyc.service
@@ -140,7 +155,7 @@ class LearnerCoordinatorService(rpyc.Service):
 
     @rpyc.exposed
     def terminate_system(self):
-        os.kill(os.getpid(), SIGINT)
+        LearnerCoordinator.terminate = True
 
 
 # ======================= Algorithm Process =========================================
@@ -293,11 +308,11 @@ class DDPGLearner:
         self.push_parameters()
 
         persis_steps = 0
-        while persis_steps <= self.n_persis:
+        while persis_steps < self.n_persis:
             learn_steps = 0
             start = time.perf_counter()
             # Learning continuously without interruption for n_learn steps
-            while learn_steps <= self.n_learn:
+            while learn_steps < self.n_learn:
                 current_states, actions, rewards, next_states, terminals = self.replay_buffer.sample_batch_transitions(
                     batch_size=self.batch_size)
                 if current_states.shape[0] >= self.batch_size:
@@ -311,13 +326,13 @@ class DDPGLearner:
                         self.push_parameters()
                 learn_steps += 1
             end = time.perf_counter()
-
             self.accum_server_conn.root.collect_accum_data(persis_steps * self.n_learn)
             self.save(self.agent_path)
             persis_steps += 1
             print(f"persis: {persis_steps} time: {end-start}s")
             print(f"Persis: {persis_steps}")
-        # self.lc_connection.root.terminate_system()
+            gc.collect()
+        self.lc_connection.root.terminate_system()
 
     @tf.function
     def _critic_train_step(self, current_states, actions, rewards, next_states):
@@ -436,6 +451,7 @@ class ParameterService(rpyc.Service):
         self.param_object.actor_params = actor_params
         self.param_object.critic_params = critic_params
         self.first_param_push_event.set()
+        gc.collect()
 
 
 class ParameterMain:
@@ -610,6 +626,7 @@ class Pusher:
 
         for key, values in self.actors.items():
             pd.DataFrame(values).to_csv(os.path.join(self.log_path, f"{key}.csv"), index=False)
+        gc.collect()
 
     def close(self):
         self.lc_connection.close()
