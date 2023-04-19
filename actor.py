@@ -1,4 +1,6 @@
 import threading
+import time
+
 import rpyc
 import tensorflow as tf
 from rpyc.utils.helpers import classpartial
@@ -315,7 +317,9 @@ class ActorCoordinator:
     def monitor_system(self):
         # Monitors the system. Makes sure all child processes are up and running. It is called after start is
         # called
-        pass
+        # You gotta keep working for signals to be received
+        while True:
+            time.sleep(1)
 
     @classmethod
     def process_terminator(cls, signum, frame):

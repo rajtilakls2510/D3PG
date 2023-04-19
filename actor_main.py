@@ -27,7 +27,7 @@ def env_creator(std):
 
 
 config = {
-    "num_actors": 5,
+    "num_actors": 1,
     "lcs_server_host": "localhost",
     "lcs_server_port": 18861,
     "acs_server_host": "localhost",
@@ -53,6 +53,4 @@ if __name__ == "__main__":
     actor_coord = actor.ActorCoordinator(env_creator, config, actor_parameters)
     actor_coord.start()
     print("Actor System Started")
-    # You gotta keep working for signals to be received
-    while True:
-        pass
+    actor_coord.monitor_system()
