@@ -59,7 +59,7 @@ class GymEnvironment(DRLEnvironment):
         self.env = env
         self.terminated = False
         self.truncated = False
-        self.reward = 0
+        self.reward = np.array(0, dtype=np.float64)
         self.preprocessed_state = None
         self.state, _ = self.env.reset()
 
@@ -73,6 +73,7 @@ class GymEnvironment(DRLEnvironment):
     # Takes an action
     def take_action(self, action):
         self.state, self.reward, self.terminated, self.truncated, _ = self.env.step(action)
+        self.reward = np.float32(self.reward)
 
     # Defaults to returning gym reward
     def calculate_reward(self, **kwargs):

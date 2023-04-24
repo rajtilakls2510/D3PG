@@ -327,7 +327,10 @@ class DDPGLearner:
                 learn_steps += 1
             end = time.perf_counter()
             self.accum_server_conn.root.collect_accum_data(persis_steps * self.n_learn)
-            self.save(self.agent_path)
+            try:
+                self.save(self.agent_path)
+            except:
+                print("Couldn't save networks")
             persis_steps += 1
             print(f"persis: {persis_steps} time: {end-start}s")
             print(f"Persis: {persis_steps}")

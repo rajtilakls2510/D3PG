@@ -27,7 +27,7 @@ def env_creator(std):
 
 
 config = {
-    "num_actors": 1,
+    "num_actors": 5,
     "lcs_server_host": "localhost",
     "lcs_server_port": 18861,
     "acs_server_host": "localhost",

@@ -1,6 +1,6 @@
 import threading
 import time
-
+import numpy as np
 import rpyc
 import tensorflow as tf
 from rpyc.utils.helpers import classpartial
@@ -148,7 +148,7 @@ class DDPGActor:
                 self.env.take_action(action.numpy())
                 next_state, reward, frame = self.env.observe()
                 next_state = tf.convert_to_tensor(next_state, tf.float32)
-                reward = tf.convert_to_tensor(reward, tf.float32)
+                reward = tf.convert_to_tensor(reward, dtype=tf.float32)
 
                 if self.mode == "train":
                     self.transition_buffer["current_state"].append(current_state)
@@ -193,7 +193,6 @@ class DDPGActor:
                 if step % self.n_push == 0:
                     if self.mode == "train":
                         self.thread_pool_executor.submit(self.push_transition_data, self.transition_buffer)
-                        del self.transition_buffer
                         self.transition_buffer = {"current_state": [], "action": [], "reward": [], "next_state": [],
                                               "terminated": []}
             for log in self.logs:
@@ -203,7 +202,6 @@ class DDPGActor:
             for log in self.logs:
                 data["log_data"][log.name] = log.consume_data()
             self.thread_pool_executor.submit(self.push_log_data, data)
-            del data
             gc.collect()
             episode += 1
 
@@ -214,7 +212,7 @@ class DDPGActor:
         state = tf.expand_dims(state, axis=0)
         action = self.actor_network(state)
         explored = tf.constant(False)
-        if tf.random.uniform(shape=(), maxval=1) < explore:
+        if np.random.uniform(0,1) < explore:
             action = action + tf.convert_to_tensor(self.env.get_random_action(), tf.float32)
             explored = tf.constant(True)
         value = self.critic_network([state, action])

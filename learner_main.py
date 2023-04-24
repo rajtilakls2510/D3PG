@@ -48,9 +48,13 @@ def network_creator():
 
     return actor_network, critic_network
 
+# 2345
+# 3707
 # 1262
+# 233
+# 2604
 learner_parameters = {
-    "agent_path": "lunar_lander_cont_agent",
+    "agent_path": "lunar_lander_cont_agent5",
     "network_creator": network_creator,
     "n_learn": 500,
     "n_persis": 1200,
