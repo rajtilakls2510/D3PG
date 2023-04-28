@@ -48,6 +48,7 @@ fig.suptitle("Total Reward vs Training Steps in Mountain Car Continuous")
 sns.lineplot(x="train_step", y="TotalReward", hue="type", data=info, ax=ax)
 ax.fill_between(single["step"], single["mean"]-single["std"]/2, single["mean"]+single["std"]/2, color="blue", alpha=0.1)
 ax.fill_between(dist["train_step"], dist["mean"]-dist["std"]/2, dist["mean"]+dist["std"]/2, color="orange", alpha=0.1)
+plt.savefig("mountain_reward.png", format="png")
 plt.show()
 
 
