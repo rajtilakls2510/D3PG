@@ -1,7 +1,7 @@
 import learner
 import tensorflow as tf
 from tensorflow.keras import Model, Input
-from tensorflow.keras.layers import Dense, Concatenate, BatchNormalization
+from tensorflow.keras.layers import Dense, Concatenate, BatchNormalization, LeakyReLU
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.initializers import RandomUniform
 import replaybuffer
@@ -20,28 +20,38 @@ np.random.seed(np.random.randint(0, 1000))
 
 def network_creator():
     # Actor Network
-    state_input = Input(shape=(8,))
-    x = Dense(256, activation="relu")(state_input)
+    state_input = Input(shape=(27,))
+    x = Dense(256)(state_input)
     x = BatchNormalization()(x)
-    x = Dense(256, activation="relu")(x)
+    x = LeakyReLU(alpha=0.0)(x)
+    x = Dense(256)(x)
     x = BatchNormalization()(x)
-    x = Dense(256, activation="relu")(x)
+    x = LeakyReLU(alpha=0.0)(x)
+    x = Dense(256)(x)
     x = BatchNormalization()(x)
-    output = Dense(2, activation="tanh", kernel_initializer=RandomUniform(minval=-0.003, maxval=0.003))(x)
+    x = LeakyReLU(alpha=0.0)(x)
+    output = Dense(8, activation="tanh", kernel_initializer=RandomUniform(minval=-0.003, maxval=0.003))(x)
     actor_network = Model(inputs=state_input, outputs=output)
-    actor_network.compile(optimizer=Adam(learning_rate=0.0005))
+    actor_network.compile(optimizer=Adam(learning_rate=0.001))
 
     # Critic Network
-    state_input = Input(shape=(8,))
-    x1 = Dense(192, activation="relu")(state_input)
+    state_input = Input(shape=(27,))
+    x1 = Dense(256)(state_input)
     x1 = BatchNormalization()(x1)
+    x1 = LeakyReLU(alpha=0.0)(x1)
+    x1 = Dense(192)(x1)
+    x1 = BatchNormalization()(x1)
+    x1 = LeakyReLU(alpha=0.0)(x1)
 
-    action_input = Input(shape=(2,))
-    x2 = Dense(64, activation="relu")(action_input)
+    action_input = Input(shape=(8,))
+    x2 = Dense(64)(action_input)
+    x2 = BatchNormalization()(x2)
+    x2 = LeakyReLU(alpha=0.0)(x2)
 
     x = Concatenate()([x1, x2])
-    x = Dense(256, activation="relu")(x)
-    x = Dense(256, activation="relu")(x)
+    x = Dense(256)(x)
+    x = BatchNormalization()(x)
+    x = LeakyReLU(alpha=0.0)(x)
     output = Dense(1, activation="linear", kernel_initializer=RandomUniform(minval=-0.003, maxval=0.003))(x)
     critic_network = Model(inputs=[state_input, action_input], outputs=output)
     critic_network.compile(optimizer=Adam(learning_rate=0.001))
@@ -54,14 +64,14 @@ def network_creator():
 # 233
 # 2604
 learner_parameters = {
-    "agent_path": "lunar_lander_cont_agent5",
+    "agent_path": "lunar_lander_cont_agent2",
     "network_creator": network_creator,
-    "n_learn": 500,
+    "n_learn": 1_000,
     "n_persis": 1200,
     "batch_size": 64,
     # "min_replay_transitions": 1000,
     "replay_buffer": replaybuffer.UniformReplay,
-    "replay_buffer_size": 100000,
+    "replay_buffer_size": 100_000,
     "discount_factor": 0.99,
     "tau": 0.001,
     "critic_loss": tf.keras.losses.MeanSquaredError,
@@ -75,7 +85,7 @@ config = {
     "accum_server_port": 18863,
     "param_server_port": 18864
 }
-
+# print(network_creator()[0].get_config())
 if __name__ == "__main__":
     learner_coord = learner.LearnerCoordinator.get_instance(learner_parameters, config)
     learner_coord.start()

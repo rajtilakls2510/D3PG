@@ -44,7 +44,8 @@ class DDPGActor:
 
     @classmethod
     def process_starter(cls, env_creator, config, actor_parameters, i):
-
+        tf.random.set_seed(tf.random.uniform(shape=(1,), minval=0, maxval=1000, dtype=tf.int32))
+        np.random.seed(np.random.randint(0, 1000))
         signal(SIGINT, DDPGActor.process_terminator)
         signal(SIGTERM, DDPGActor.process_terminator)
 

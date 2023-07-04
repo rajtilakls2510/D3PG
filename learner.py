@@ -323,9 +323,9 @@ class DDPGLearner:
                                             self.actor_network.trainable_weights, self.tau)
                         self.update_targets(self.critic_target_network.trainable_weights,
                                             self.critic_network.trainable_weights, self.tau)
-                        self.push_parameters()
                 learn_steps += 1
             end = time.perf_counter()
+            self.push_parameters()
             self.accum_server_conn.root.collect_accum_data(persis_steps * self.n_learn)
             try:
                 self.save(self.agent_path)

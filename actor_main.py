@@ -18,12 +18,10 @@ except:
     # Invalid device or cannot modify virtual devices once initialized.
     pass
 
-tf.random.set_seed(tf.random.uniform(shape=(1,), minval=0, maxval=1000, dtype=tf.int32))
-np.random.seed(np.random.randint(0, 1000))
 
 
 def env_creator(std):
-    return environment.LunarLanderContinuousEnvironment(gym.make("LunarLander-v2", continuous=True, render_mode = "rgb_array"), std)
+    return environment.AntEnvironment(gym.make("Ant-v4", render_mode = "rgb_array"), std)
 
 
 config = {
