@@ -44,7 +44,7 @@ actor_parameters = {
     "max_executors": 10,
     "show_acting": False,
     "logs": [logger.EpisodeLengthLogger, logger.TotalRewardLogger, logger.EpisodeTimeLogger],
-    "std": [0.05, 0.1, 0.2, 0.3, 0.4]
+    "std": [0.05, 0.1, 0.2, 0.3]
 }
 
 if __name__ == "__main__":

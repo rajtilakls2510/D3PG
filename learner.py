@@ -81,7 +81,7 @@ class LearnerCoordinator:
 
         # Starting Algorithm Process
         print("Starting Algorithm Process")
-        self.reference_holders["algo_process"] = multiprocessing.Process(target=DDPGLearner.process_starter,
+        self.reference_holders["algo_process"] = multiprocessing.Process(target=TD3Learner.process_starter,
                                                                          args=(self.learner_parameters, self.config),
                                                                          name='Algorithm')
         self.reference_holders["algo_process"].start()
@@ -197,7 +197,221 @@ class AlgorithmService(rpyc.Service):
         threading.Thread(target=self.parse_and_insert, args=(data,)).start()
 
 
-class DDPGLearner:
+# class DDPGLearner:
+#     learner_object = None
+#
+#     def __init__(self, learner_parameters):
+#         self.parameter_server_conn = None
+#         self.accum_server_conn = None
+#         self.as_server = None
+#         self.lc_connection = None
+#         self.step_counter = 1
+#         self.agent_path = learner_parameters["agent_path"]
+#         self.actor_network, self.critic_network = learner_parameters["network_creator"]()
+#         if self.actor_network is None:
+#             self.actor_target_network = None
+#         else:
+#             self.actor_target_network = clone_model(self.actor_network)
+#
+#         if self.critic_network is None:
+#             self.critic_target_network = None
+#         else:
+#             self.critic_target_network = clone_model(self.critic_network)
+#         self.n_learn = learner_parameters["n_learn"]
+#         self.n_persis = learner_parameters["n_persis"]
+#         self.batch_size = learner_parameters["batch_size"]
+#         # self.min_replay_transitions = learner_parameters["min_replay_transitions"]
+#         self.replay_buffer = learner_parameters["replay_buffer"](learner_parameters["replay_buffer_size"], continuous_actions=True)
+#         self.discount_factor = tf.convert_to_tensor(learner_parameters["discount_factor"])
+#         self.tau = tf.convert_to_tensor(learner_parameters["tau"])
+#         self.critic_loss = learner_parameters["critic_loss"]()
+#         self.actor_learn = learner_parameters["actor_learn"]
+#
+#     def start_as_server(self):
+#         print("Starting Algorithm Server")
+#         self.as_server.start()
+#
+#     @classmethod
+#     def process_starter(cls, learner_parameters, config):
+#         print(f"Algorithm Process Started: {os.getpid()}")
+#
+#         signal(SIGINT, DDPGLearner.process_terminator)
+#         signal(SIGTERM, DDPGLearner.process_terminator)
+#
+#         # Starting Algorithm Server
+#         start_event = threading.Event()
+#         learner = DDPGLearner(learner_parameters)
+#         DDPGLearner.learner_object = learner
+#         as_service = classpartial(AlgorithmService, start_event, learner)
+#         learner.as_server = ThreadedServer(as_service, port=config["algo_server_port"])
+#         t1 = threading.Thread(target=learner.start_as_server)
+#         t1.start()
+#
+#         # Sending confirmation to LC about successful process start
+#         learner.lc_connection = rpyc.connect("localhost", port=config["lcs_server_port"])
+#         learner.lc_connection.root.component_started_confirmation("algo")
+#
+#         # Waiting for start confirmation from LC
+#         start_event.wait()
+#
+#         # After confirmation from LC, start training
+#         learner.train(config)
+#
+#     @classmethod
+#     def process_terminator(cls, signum, frame):
+#         learner = DDPGLearner.learner_object
+#         learner.close()
+#         learner.lc_connection.close()
+#         learner.as_server.close()
+#         exit(0)
+#
+#     def push_parameters(self):
+#         actor_weights = self.actor_network.get_weights()
+#
+#         # Protocol for Sending:
+#         # - Serialize Tensor
+#         # - Base64 Encode it
+#         # - Convert list of parameters to json
+#
+#         for i in range(len(actor_weights)):
+#             actor_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.convert_to_tensor(actor_weights[i])).numpy()).decode('ascii')
+#         critic_weights = self.critic_network.get_weights()
+#         for i in range(len(critic_weights)):
+#             critic_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.convert_to_tensor(critic_weights[i])).numpy()).decode('ascii')
+#         try:
+#             self.parameter_server_conn.root.set_params(json.dumps(actor_weights), json.dumps(critic_weights))
+#         except Exception as e:
+#             print(e)
+#             # Ignore if parameter server is not available (It will be available when LC restarts the process hopefully)
+#
+#     def save_keras_model(self, model, path):
+#         os.makedirs(path, exist_ok=True)
+#         with open(os.path.join(path, "config.json"), "w") as f:
+#             f.write(json.dumps(model.get_config()))
+#
+#         model.save_weights(os.path.join(path, "weights"))
+#
+#     def load_keras_model(self,path):
+#         with open(os.path.join(path, "config.json"), "r") as f:
+#             config = json.loads(f.read())
+#         model = Model().from_config(config)
+#         model.load_weights(os.path.join(path, "weights"))
+#         return model
+#
+#     def train(self, config):
+#         # Loading
+#         self.load(self.agent_path)
+#         # Initialize Parameter Server
+#         self.parameter_server_conn = rpyc.connect("localhost", port=config["param_server_port"])
+#         self.accum_server_conn = rpyc.connect("localhost", port=config["accum_server_port"])
+#         self.parameter_server_conn.root.set_nnet_arch(json.dumps(self.actor_network.get_config()), json.dumps(self.critic_network.get_config()))
+#         self.push_parameters()
+#
+#         persis_steps = 0
+#         while persis_steps < self.n_persis:
+#             learn_steps = 0
+#             start = time.perf_counter()
+#             # Learning continuously without interruption for n_learn steps
+#             while learn_steps < self.n_learn:
+#                 current_states, actions, rewards, next_states, terminals = self.replay_buffer.sample_batch_transitions(
+#                     batch_size=self.batch_size)
+#                 if current_states.shape[0] >= self.batch_size:
+#                     self._critic_train_step(current_states, actions, rewards, next_states)
+#                     if learn_steps % self.actor_learn == 0:
+#                         self._actor_train_step(current_states)
+#                         self.update_targets(self.actor_target_network.trainable_weights,
+#                                             self.actor_network.trainable_weights, self.tau)
+#                         self.update_targets(self.critic_target_network.trainable_weights,
+#                                             self.critic_network.trainable_weights, self.tau)
+#                 learn_steps += 1
+#             end = time.perf_counter()
+#             self.push_parameters()
+#             self.accum_server_conn.root.collect_accum_data(persis_steps * self.n_learn)
+#             try:
+#                 self.save(self.agent_path)
+#             except:
+#                 print("Couldn't save networks")
+#             persis_steps += 1
+#             print(f"persis: {persis_steps} time: {end-start}s")
+#             print(f"Persis: {persis_steps}")
+#             gc.collect()
+#         self.lc_connection.root.terminate_system()
+#
+#     @tf.function
+#     def _critic_train_step(self, current_states, actions, rewards, next_states):
+#         targets = tf.expand_dims(rewards, axis=1) + self.discount_factor * self.critic_target_network(
+#             [next_states, self.actor_target_network(next_states)])
+#
+#         with tf.GradientTape() as critic_tape:
+#             critic_value = self.critic_network([current_states, actions])
+#             critic_loss = self.critic_loss(targets, critic_value)
+#
+#         critic_grads = critic_tape.gradient(critic_loss, self.critic_network.trainable_weights)
+#         self.critic_network.optimizer.apply_gradients(zip(critic_grads, self.critic_network.trainable_weights))
+#
+#     @tf.function
+#     def _actor_train_step(self, current_states):
+#
+#         with tf.GradientTape() as actor_tape:
+#             actor_loss = -tf.reduce_mean(self.critic_network([current_states, self.actor_network(current_states)]))
+#
+#         actor_grads = actor_tape.gradient(actor_loss, self.actor_network.trainable_weights)
+#         self.actor_network.optimizer.apply_gradients(zip(actor_grads, self.actor_network.trainable_weights))
+#
+#     @tf.function
+#     def update_targets(self, target_weights, weights, tau):
+#         for (target_w, w) in zip(target_weights, weights):
+#             target_w.assign(tau * w + (1 - tau) * target_w)
+#
+#     def save(self, path=""):
+#         self.actor_network.save(os.path.join(path, "actor_network"))
+#         self.actor_target_network.save(os.path.join(path, "actor_target_network"))
+#         self.critic_network.save(os.path.join(path, "critic_network"))
+#         self.critic_target_network.save(os.path.join(path, "critic_target_network"))
+#         self.replay_buffer.save(os.path.join(path, "replay"))
+#         # self.save_keras_model(self.actor_network, os.path.join(path, "actor_network"))
+#         # self.save_keras_model(self.actor_target_network, os.path.join(path, "actor_target_network"))
+#         # self.save_keras_model(self.critic_network, os.path.join(path, "critic_network"))
+#         # self.save_keras_model(self.critic_target_network, os.path.join(path, "critic_target_network"))
+#
+#     def load(self, path=""):
+#         try:
+#             self.actor_network = load_model(os.path.join(path, "actor_network"))
+#             self.critic_network = load_model(os.path.join(path, "critic_network"))
+#             try:
+#                 self.actor_target_network = load_model(os.path.join(path, "actor_target_network"))
+#             except:
+#                 if self.actor_network is not None:
+#                     self.actor_target_network = clone_model(self.actor_network)
+#             try:
+#                 self.critic_target_network = load_model(os.path.join(path, "critic_target_network"))
+#             except:
+#                 if self.critic_network is not None:
+#                     self.critic_target_network = clone_model(self.critic_network)
+#         #     self.actor_network = self.load_keras_model(os.path.join(path, "actor_network"))
+#         #     self.critic_network = self.load_keras_model(os.path.join(path, "critic_network"))
+#         #
+#         #     try:
+#         #         self.actor_target_network = self.load_keras_model(os.path.join(path, "actor_target_network"))
+#         #     except:
+#         #         if self.actor_network is not None:
+#         #             self.actor_target_network = clone_model(self.actor_network)
+#         #     try:
+#         #         self.critic_target_network = self.load_keras_model(os.path.join(path, "critic_target_network"))
+#         #     except:
+#         #         if self.critic_network is not None:
+#         #             self.critic_target_network = clone_model(self.critic_network)
+#         except Exception as e:
+#             # If actor or critic networks are not found, work with current actor and critic networks
+#             print(e)
+#         self.replay_buffer.load(os.path.join(path, "replay"))
+#
+#     def close(self):
+#         if self.parameter_server_conn:
+#             self.parameter_server_conn.close()
+
+
+class TD3Learner:
     learner_object = None
 
     def __init__(self, learner_parameters):
@@ -207,25 +421,33 @@ class DDPGLearner:
         self.lc_connection = None
         self.step_counter = 1
         self.agent_path = learner_parameters["agent_path"]
-        self.actor_network, self.critic_network = learner_parameters["network_creator"]()
+        self.actor_network, self.critic_network1, self.critic_network2 = learner_parameters["network_creator"]()
         if self.actor_network is None:
             self.actor_target_network = None
         else:
             self.actor_target_network = clone_model(self.actor_network)
 
-        if self.critic_network is None:
-            self.critic_target_network = None
+        if self.critic_network1 is None:
+            self.critic_target_network1 = None
         else:
-            self.critic_target_network = clone_model(self.critic_network)
+            self.critic_target_network1 = clone_model(self.critic_network1)
+
+        if self.critic_network2 is None:
+            self.critic_target_network2 = None
+        else:
+            self.critic_target_network2 = clone_model(self.critic_network2)
         self.n_learn = learner_parameters["n_learn"]
         self.n_persis = learner_parameters["n_persis"]
         self.batch_size = learner_parameters["batch_size"]
-        # self.min_replay_transitions = learner_parameters["min_replay_transitions"]
+        self.min_replay_size = learner_parameters["min_replay_size"]
         self.replay_buffer = learner_parameters["replay_buffer"](learner_parameters["replay_buffer_size"], continuous_actions=True)
         self.discount_factor = tf.convert_to_tensor(learner_parameters["discount_factor"])
         self.tau = tf.convert_to_tensor(learner_parameters["tau"])
         self.critic_loss = learner_parameters["critic_loss"]()
         self.actor_learn = learner_parameters["actor_learn"]
+        self.target_noise_std = tf.convert_to_tensor(learner_parameters["target_noise_std"], dtype=tf.float32)
+        self.target_noise_clip = tf.convert_to_tensor(learner_parameters["target_noise_clipvalue"], dtype=tf.float32)
+
 
     def start_as_server(self):
         print("Starting Algorithm Server")
@@ -235,13 +457,13 @@ class DDPGLearner:
     def process_starter(cls, learner_parameters, config):
         print(f"Algorithm Process Started: {os.getpid()}")
 
-        signal(SIGINT, DDPGLearner.process_terminator)
-        signal(SIGTERM, DDPGLearner.process_terminator)
+        signal(SIGINT, TD3Learner.process_terminator)
+        signal(SIGTERM, TD3Learner.process_terminator)
 
         # Starting Algorithm Server
         start_event = threading.Event()
-        learner = DDPGLearner(learner_parameters)
-        DDPGLearner.learner_object = learner
+        learner = TD3Learner(learner_parameters)
+        TD3Learner.learner_object = learner
         as_service = classpartial(AlgorithmService, start_event, learner)
         learner.as_server = ThreadedServer(as_service, port=config["algo_server_port"])
         t1 = threading.Thread(target=learner.start_as_server)
@@ -259,27 +481,30 @@ class DDPGLearner:
 
     @classmethod
     def process_terminator(cls, signum, frame):
-        learner = DDPGLearner.learner_object
+        learner = TD3Learner.learner_object
         learner.close()
         learner.lc_connection.close()
         learner.as_server.close()
         exit(0)
 
     def push_parameters(self):
-        actor_weights = self.actor_network.get_weights()
-
         # Protocol for Sending:
         # - Serialize Tensor
         # - Base64 Encode it
         # - Convert list of parameters to json
 
+        actor_weights = self.actor_network.get_weights()
         for i in range(len(actor_weights)):
             actor_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.convert_to_tensor(actor_weights[i])).numpy()).decode('ascii')
-        critic_weights = self.critic_network.get_weights()
-        for i in range(len(critic_weights)):
-            critic_weights[i] = base64.b64encode(tf.io.serialize_tensor(tf.convert_to_tensor(critic_weights[i])).numpy()).decode('ascii')
+        critic_weights1 = self.critic_network1.get_weights()
+        for i in range(len(critic_weights1)):
+            critic_weights1[i] = base64.b64encode(tf.io.serialize_tensor(tf.convert_to_tensor(critic_weights1[i])).numpy()).decode('ascii')
+        critic_weights2 = self.critic_network2.get_weights()
+        for i in range(len(critic_weights2)):
+            critic_weights2[i] = base64.b64encode(
+                tf.io.serialize_tensor(tf.convert_to_tensor(critic_weights2[i])).numpy()).decode('ascii')
         try:
-            self.parameter_server_conn.root.set_params(json.dumps(actor_weights), json.dumps(critic_weights))
+            self.parameter_server_conn.root.set_params(json.dumps(actor_weights), json.dumps(critic_weights1), json.dumps(critic_weights2))
         except Exception as e:
             print(e)
             # Ignore if parameter server is not available (It will be available when LC restarts the process hopefully)
@@ -304,7 +529,7 @@ class DDPGLearner:
         # Initialize Parameter Server
         self.parameter_server_conn = rpyc.connect("localhost", port=config["param_server_port"])
         self.accum_server_conn = rpyc.connect("localhost", port=config["accum_server_port"])
-        self.parameter_server_conn.root.set_nnet_arch(json.dumps(self.actor_network.get_config()), json.dumps(self.critic_network.get_config()))
+        self.parameter_server_conn.root.set_nnet_arch(json.dumps(self.actor_network.get_config()), json.dumps(self.critic_network1.get_config()), json.dumps(self.critic_network2.get_config()))
         self.push_parameters()
 
         persis_steps = 0
@@ -313,22 +538,29 @@ class DDPGLearner:
             start = time.perf_counter()
             # Learning continuously without interruption for n_learn steps
             while learn_steps < self.n_learn:
-                current_states, actions, rewards, next_states, terminals = self.replay_buffer.sample_batch_transitions(
-                    batch_size=self.batch_size)
-                if current_states.shape[0] >= self.batch_size:
-                    self._critic_train_step(current_states, actions, rewards, next_states)
-                    if learn_steps % self.actor_learn == 0:
+                if self.replay_buffer.size() > self.min_replay_size:
+                    current_states, actions, rewards, next_states, terminals = self.replay_buffer.sample_batch_transitions(
+                        batch_size=self.batch_size)
+                    first_critic = self._critic_train_step(current_states, actions, rewards, next_states, terminals,
+                                                           tf.random.normal(shape=actions.shape,
+                                                                            stddev=self.target_noise_std))
+                    if self.step_counter % self.actor_learn == 0:
                         self._actor_train_step(current_states)
                         self.update_targets(self.actor_target_network.trainable_weights,
                                             self.actor_network.trainable_weights, self.tau)
-                        self.update_targets(self.critic_target_network.trainable_weights,
-                                            self.critic_network.trainable_weights, self.tau)
+                        if first_critic.numpy():
+                            self.update_targets(self.critic_target_network1.trainable_weights,
+                                                self.critic_network1.trainable_weights, self.tau)
+                        else:
+                            self.update_targets(self.critic_target_network2.trainable_weights,
+                                                self.critic_network2.trainable_weights, self.tau)
                 learn_steps += 1
             end = time.perf_counter()
             self.push_parameters()
             self.accum_server_conn.root.collect_accum_data(persis_steps * self.n_learn)
             try:
-                self.save(self.agent_path)
+                if persis_steps%50==0:
+                    self.save(self.agent_path)
             except:
                 print("Couldn't save networks")
             persis_steps += 1
@@ -338,22 +570,34 @@ class DDPGLearner:
         self.lc_connection.root.terminate_system()
 
     @tf.function
-    def _critic_train_step(self, current_states, actions, rewards, next_states):
-        targets = tf.expand_dims(rewards, axis=1) + self.discount_factor * self.critic_target_network(
-            [next_states, self.actor_target_network(next_states)])
+    def _critic_train_step(self, current_states, actions, rewards, next_states, terminals, target_action_noise):
+        target_noise = tf.clip_by_value(target_action_noise, -self.target_noise_clip, self.target_noise_clip)
+        targets1 = tf.expand_dims(rewards, axis=1) + self.discount_factor * self.critic_target_network1(
+            [next_states, self.actor_target_network(next_states) + target_noise])
+        targets2 = tf.expand_dims(rewards, axis=1) + self.discount_factor * self.critic_target_network2(
+            [next_states, self.actor_target_network(next_states) + target_noise])
+        targets = tf.where(targets1 > targets2, targets2, targets1)
+        targets = tf.where(tf.expand_dims(terminals, axis=1), tf.expand_dims(rewards, axis=1), targets)
 
-        with tf.GradientTape() as critic_tape:
-            critic_value = self.critic_network([current_states, actions])
-            critic_loss = self.critic_loss(targets, critic_value)
-
-        critic_grads = critic_tape.gradient(critic_loss, self.critic_network.trainable_weights)
-        self.critic_network.optimizer.apply_gradients(zip(critic_grads, self.critic_network.trainable_weights))
+        with tf.GradientTape(persistent=True) as critic_tape:
+            critic_value1 = self.critic_network1([current_states, actions])
+            critic_loss1 = self.critic_loss(targets, critic_value1)
+            critic_value2 = self.critic_network2([current_states, actions])
+            critic_loss2 = self.critic_loss(targets, critic_value2)
+        first_critic = tf.less(critic_loss2, critic_loss1)
+        if first_critic:
+            critic_grads = critic_tape.gradient(critic_loss1, self.critic_network1.trainable_weights)
+            self.critic_network1.optimizer.apply_gradients(zip(critic_grads, self.critic_network1.trainable_weights))
+        else:
+            critic_grads = critic_tape.gradient(critic_loss2, self.critic_network2.trainable_weights)
+            self.critic_network2.optimizer.apply_gradients(zip(critic_grads, self.critic_network2.trainable_weights))
+        del critic_tape
+        return first_critic
 
     @tf.function
     def _actor_train_step(self, current_states):
-
         with tf.GradientTape() as actor_tape:
-            actor_loss = -tf.reduce_mean(self.critic_network([current_states, self.actor_network(current_states)]))
+            actor_loss = -tf.reduce_mean(self.critic_network1([current_states, self.actor_network(current_states)]))
 
         actor_grads = actor_tape.gradient(actor_loss, self.actor_network.trainable_weights)
         self.actor_network.optimizer.apply_gradients(zip(actor_grads, self.actor_network.trainable_weights))
@@ -366,41 +610,32 @@ class DDPGLearner:
     def save(self, path=""):
         self.actor_network.save(os.path.join(path, "actor_network"))
         self.actor_target_network.save(os.path.join(path, "actor_target_network"))
-        self.critic_network.save(os.path.join(path, "critic_network"))
-        self.critic_target_network.save(os.path.join(path, "critic_target_network"))
+        self.critic_network1.save(os.path.join(path, "critic_network1"))
+        self.critic_target_network1.save(os.path.join(path, "critic_target_network1"))
+        self.critic_network2.save(os.path.join(path, "critic_network2"))
+        self.critic_target_network2.save(os.path.join(path, "critic_target_network2"))
         self.replay_buffer.save(os.path.join(path, "replay"))
-        # self.save_keras_model(self.actor_network, os.path.join(path, "actor_network"))
-        # self.save_keras_model(self.actor_target_network, os.path.join(path, "actor_target_network"))
-        # self.save_keras_model(self.critic_network, os.path.join(path, "critic_network"))
-        # self.save_keras_model(self.critic_target_network, os.path.join(path, "critic_target_network"))
 
     def load(self, path=""):
         try:
             self.actor_network = load_model(os.path.join(path, "actor_network"))
-            self.critic_network = load_model(os.path.join(path, "critic_network"))
+            self.critic_network1 = load_model(os.path.join(path, "critic_network1"))
+            self.critic_network2 = load_model(os.path.join(path, "critic_network2"))
             try:
                 self.actor_target_network = load_model(os.path.join(path, "actor_target_network"))
             except:
                 if self.actor_network is not None:
                     self.actor_target_network = clone_model(self.actor_network)
             try:
-                self.critic_target_network = load_model(os.path.join(path, "critic_target_network"))
+                self.critic_target_network1 = load_model(os.path.join(path, "critic_target_network1"))
             except:
-                if self.critic_network is not None:
-                    self.critic_target_network = clone_model(self.critic_network)
-        #     self.actor_network = self.load_keras_model(os.path.join(path, "actor_network"))
-        #     self.critic_network = self.load_keras_model(os.path.join(path, "critic_network"))
-        #
-        #     try:
-        #         self.actor_target_network = self.load_keras_model(os.path.join(path, "actor_target_network"))
-        #     except:
-        #         if self.actor_network is not None:
-        #             self.actor_target_network = clone_model(self.actor_network)
-        #     try:
-        #         self.critic_target_network = self.load_keras_model(os.path.join(path, "critic_target_network"))
-        #     except:
-        #         if self.critic_network is not None:
-        #             self.critic_target_network = clone_model(self.critic_network)
+                if self.critic_network1 is not None:
+                    self.critic_target_network1 = clone_model(self.critic_network1)
+            try:
+                self.critic_target_network2 = load_model(os.path.join(path, "critic_target_network2"))
+            except:
+                if self.critic_network2 is not None:
+                    self.critic_target_network2 = clone_model(self.critic_network2)
         except Exception as e:
             # If actor or critic networks are not found, work with current actor and critic networks
             print(e)
@@ -436,23 +671,25 @@ class ParameterService(rpyc.Service):
     @rpyc.exposed
     def get_nnet_arch(self):
         self.arch_push_event.wait()
-        return self.param_object.actor_config, self.param_object.critic_config
+        return self.param_object.actor_config, self.param_object.critic_config1, self.param_object.critic_config2
 
     @rpyc.exposed
     def get_params(self):
         self.first_param_push_event.wait()
-        return self.param_object.actor_params, self.param_object.critic_params
+        return self.param_object.actor_params, self.param_object.critic_params1, self.param_object.critic_params2
 
     @rpyc.exposed
-    def set_nnet_arch(self, actor_config, critic_config):
+    def set_nnet_arch(self, actor_config, critic_config1, critic_config2):
         self.param_object.actor_config = actor_config
-        self.param_object.critic_config = critic_config
+        self.param_object.critic_config1 = critic_config1
+        self.param_object.critic_config2 = critic_config2
         self.arch_push_event.set()
 
     @rpyc.exposed
-    def set_params(self, actor_params, critic_params):
+    def set_params(self, actor_params, critic_params1, critic_params2):
         self.param_object.actor_params = actor_params
-        self.param_object.critic_params = critic_params
+        self.param_object.critic_params1 = critic_params1
+        self.param_object.critic_params2 = critic_params2
         self.first_param_push_event.set()
         gc.collect()
 
@@ -464,9 +701,11 @@ class ParameterMain:
         self.ps_server = None
         self.lc_connection = None
         self.actor_config = None
-        self.critic_config = None
+        self.critic_config1 = None
+        self.critic_config2 = None
         self.actor_params = None
-        self.critic_params = None
+        self.critic_params1 = None
+        self.critic_params2 = None
 
     def start_ps_server(self):
         print("Starting Parameter Server")

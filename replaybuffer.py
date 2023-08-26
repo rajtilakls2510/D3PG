@@ -37,6 +37,7 @@ class ReplayBuffer:
         pass
 
 
+
 class UniformReplay(ReplayBuffer):
     # This class is an implementation of a simple Uniform Replay Buffer
 

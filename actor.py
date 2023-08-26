@@ -29,7 +29,8 @@ class DDPGActor:
         self.param_server_conn = None
         self.acs_server_conn = None
         self.actor_network = None
-        self.critic_network = None
+        self.critic_network1 = None
+        self.critic_network2 = None
         self.exploration = actor_parameters["exploration"]
         self.n_fetch = actor_parameters["n_fetch"]
         self.n_push = actor_parameters["n_push"]
@@ -65,9 +66,10 @@ class DDPGActor:
         exit(0)
 
     def pull_nnet_arch(self):
-        actor_config, critic_config = self.param_server_conn.root.get_nnet_arch()
+        actor_config, critic_config1, critic_config2 = self.param_server_conn.root.get_nnet_arch()
         self.actor_network = tf.keras.Model().from_config(json.loads(actor_config))
-        self.critic_network = tf.keras.Model().from_config(json.loads(critic_config))
+        self.critic_network1 = tf.keras.Model().from_config(json.loads(critic_config1))
+        self.critic_network2 = tf.keras.Model().from_config(json.loads(critic_config2))
 
     def pull_nnet_params(self):
         # Protocol for Receiving:
@@ -75,16 +77,20 @@ class DDPGActor:
         # - Base64 Decode Each value of list
         # - Parse Tensor Each value of list
         try:
-            actor_weights, critic_weights = self.param_server_conn.root.get_params()
+            actor_weights, critic_weights1, critic_weights2 = self.param_server_conn.root.get_params()
             actor_weights = json.loads(actor_weights)
-            critic_weights = json.loads(critic_weights)
+            critic_weights1 = json.loads(critic_weights1)
+            critic_weights2 = json.loads(critic_weights2)
             for i in range(len(actor_weights)):
                 actor_weights[i] = tf.io.parse_tensor(base64.b64decode(actor_weights[i]), out_type=tf.float32)
-            for i in range(len(critic_weights)):
-                critic_weights[i] = tf.io.parse_tensor(base64.b64decode(critic_weights[i]), out_type=tf.float32)
+            for i in range(len(critic_weights1)):
+                critic_weights1[i] = tf.io.parse_tensor(base64.b64decode(critic_weights1[i]), out_type=tf.float32)
+            for i in range(len(critic_weights2)):
+                critic_weights2[i] = tf.io.parse_tensor(base64.b64decode(critic_weights2[i]), out_type=tf.float32)
             self.actor_network.set_weights(actor_weights)
-            self.critic_network.set_weights(critic_weights)
-            del actor_weights, critic_weights
+            self.critic_network1.set_weights(critic_weights1)
+            self.critic_network2.set_weights(critic_weights2)
+            del actor_weights, critic_weights1, critic_weights2
             gc.collect()
         except:
             print("\rException: Couldn't pull parameters", end="")
@@ -156,9 +162,8 @@ class DDPGActor:
                     self.transition_buffer["action"].append(action)
                     self.transition_buffer["reward"].append(reward)
                     self.transition_buffer["next_state"].append(next_state)
-                    self.transition_buffer["terminated"].append(tf.convert_to_tensor(self.env.is_episode_finished()))
+                    self.transition_buffer["terminated"].append(tf.convert_to_tensor(self.env.terminated))
 
-                current_state = next_state
 
                 step_data = {
                     "current_state": current_state.numpy(),
@@ -170,6 +175,7 @@ class DDPGActor:
                     "frame": frame
                 }
 
+                current_state = next_state
                 for log in self.logs:
                     log.on_episode_step(step_data)
 
@@ -213,14 +219,16 @@ class DDPGActor:
         state = tf.expand_dims(state, axis=0)
         action = self.actor_network(state)
         explored = tf.constant(False)
-        if np.random.uniform(0,1) < explore:
+        if np.random.uniform(0,1) <= explore:
             action = action + tf.convert_to_tensor(self.env.get_random_action(), tf.float32)
             explored = tf.constant(True)
-        value = self.critic_network([state, action])
-        return action[0], value[0][0], explored
+        value = self.critic_network1([state, action])
+        value += self.critic_network2([state, action])
+        return action[0], value[0][0]/2, explored
 
     def get_values(self, states):
-        return self.critic_network([states, self.actor_network(states)])
+        return (self.critic_network1([states, self.actor_network(states)]) + self.critic_network2(
+            [states, self.actor_network(states)])) / 2
 
     def close(self):
         # Release any resources here
